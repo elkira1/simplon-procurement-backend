@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 from datetime import timedelta
+import dj_database_url
 from decouple import config
 import cloudinary
 
@@ -86,15 +87,22 @@ TEMPLATES = [
 WSGI_APPLICATION = 'simplonservice.wsgi.application'
 
 # Database
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DATABASE_NAME'),  
+#         'USER': config('DATABASE_USER'),  
+#         'PASSWORD': config('DATABASE_PASSWORD'),  
+#         'HOST': config('DATABASE_HOST', default='localhost'),  
+#         'PORT': config('DATABASE_PORT', default='5432'),  
+#     }
+# }
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DATABASE_NAME'),  
-        'USER': config('DATABASE_USER'),  
-        'PASSWORD': config('DATABASE_PASSWORD'),  
-        'HOST': config('DATABASE_HOST', default='localhost'),  
-        'PORT': config('DATABASE_PORT', default='5432'),  
-    }
+    'default': dj_database_url.config(
+        default=config('DATABASE_URL', default='sqlite:///db.sqlite3'),
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
 
 AUTH_USER_MODEL = 'core.CustomUser'

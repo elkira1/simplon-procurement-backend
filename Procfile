@@ -1,1 +1,1 @@
-web: gunicorn simplonservice.wsgi:application
+web: gunicorn simplonservice.wsgi --bind 0.0.0.0:$PORT

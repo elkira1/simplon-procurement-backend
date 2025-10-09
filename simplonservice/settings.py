@@ -32,7 +32,7 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 # ALLOWED_HOSTS
 ALLOWED_HOSTS = config(
     'ALLOWED_HOSTS',
-    default='simplon-procurement-backend-1.onrender.com,localhost,127.0.0.1'
+    default='simplon-procurement-backend-1.onrender.com,https://simplonservices-psi.vercel.app,127.0.0.1'
 ).split(',')
 
 # Application definition
@@ -217,13 +217,13 @@ SIMPLE_JWT = {
 # CORS Configuration - CORRIGÉ avec schémas https://
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='https://simplon-procurement-backend-1.onrender.com,http://localhost:3000,http://localhost:5173'
+    default='https://simplon-procurement-backend-1.onrender.com,https://simplonservices-psi.vercel.app,http://localhost:5173'
 ).split(',')
 
 # CSRF Configuration - CORRIGÉ avec schémas https://
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
-    default='https://simplon-procurement-backend-1.onrender.com,http://localhost:3000,http://localhost:5173'
+    default='https://simplon-procurement-backend-1.onrender.com,https://simplonservices-psi.vercel.app,http://localhost:5173'
 ).split(',')
 
 # Configuration CORS supplémentaire
@@ -295,7 +295,7 @@ DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='vsawadogo.ext@simplon
 DEFAULT_FROM_NAME = config('DEFAULT_FROM_NAME', default='Simplon Service')
 
 # Frontend configuration
-FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
+FRONTEND_URL = config('FRONTEND_URL', default='https://simplonservices-psi.vercel.app')
 COMPANY_NAME = config('COMPANY_NAME', default='Simplon')
 
 # Cloudinary configuration for file storage

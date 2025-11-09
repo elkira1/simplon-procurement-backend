@@ -317,6 +317,12 @@ SUPABASE_FOLDER = config('SUPABASE_FOLDER', default='attachments')
 SUPABASE_PUBLIC_BUCKET = config('SUPABASE_PUBLIC_BUCKET', default=False, cast=bool)
 SUPABASE_SIGNED_URL_TTL = config('SUPABASE_SIGNED_URL_TTL', default=3600, cast=int)
 
+# Superuser bootstrap configuration (used by migration 0008)
+DJANGO_SUPERUSER_USERNAME = config('DJANGO_SUPERUSER_USERNAME', default=None)
+DJANGO_SUPERUSER_EMAIL = config('DJANGO_SUPERUSER_EMAIL', default=None)
+DJANGO_SUPERUSER_PASSWORD = config('DJANGO_SUPERUSER_PASSWORD', default=None)
+DJANGO_SUPERUSER_ROLE = config('DJANGO_SUPERUSER_ROLE', default='director')
+
 # Logging configuration - Adapté pour Render (pas de fichiers logs)
 LOGGING = {
     'version': 1,

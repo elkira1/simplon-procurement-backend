@@ -91,6 +91,12 @@ SUPABASE_FOLDER=purchase-requests
 SUPABASE_PUBLIC_BUCKET=false
 SUPABASE_SIGNED_URL_TTL=3600
 
+# Superuser bootstrap (optionnel, utilisé par la migration 0008)
+DJANGO_SUPERUSER_USERNAME=admin
+DJANGO_SUPERUSER_EMAIL=admin@example.com
+DJANGO_SUPERUSER_PASSWORD=motdepassefort
+DJANGO_SUPERUSER_ROLE=director
+
 # Frontend
 FRONTEND_URL=https://your-frontend.com
 COMPANY_NAME=Your Company Name

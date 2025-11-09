@@ -1043,7 +1043,7 @@ def dashboard(request):
         'director': ('accounting_validated_at', 'approved_at'),
     }
     ROLE_LABELS = {
-        'employee': 'Employés',
+        'employee': 'Personnel',
         'mg': 'Moyens Généraux',
         'accounting': 'Comptabilité',
         'director': 'Direction',
@@ -1327,6 +1327,7 @@ def dashboard(request):
         'awaiting_my_action': queue_queryset.count(),
         'validated_by_me': my_validated.count(),
         'rejected_by_me': my_rejections.count(),
+        'department': user.department or None,
     }
 
     def compute_avg_handle_time(role):

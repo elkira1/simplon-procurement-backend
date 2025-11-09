@@ -269,9 +269,15 @@ CSRF_TRUSTED_ORIGINS = csv_env(
     default=(
         'https://simplonservices-ci.vercel.app,'
         'https://simplonservices.onrender.com,'
+        'https://*.vercel.app,'
         'http://localhost:3000,'
         'http://localhost:5173'
     )
+)
+
+CORS_ALLOWED_ORIGIN_REGEXES = csv_env(
+    'CORS_ALLOWED_ORIGIN_REGEXES',
+    default=r'^https://.*\.vercel\.app$'
 )
 
 # Configuration CORS supplémentaire

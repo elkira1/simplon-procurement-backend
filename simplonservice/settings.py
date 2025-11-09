@@ -13,8 +13,30 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 from datetime import timedelta
+from urllib.parse import urlparse
 import dj_database_url
 from decouple import config
+
+
+def csv_env(key: str, default: str = ""):
+    raw = config(key, default=default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def origin_from_url(url: str | None):
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def host_from_url(url: str | None):
+    if not url:
+        return None
+    parsed = urlparse(url)
+    return parsed.hostname
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,7 +51,12 @@ SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 
 # ALLOWED_HOSTS
-ALLOWED_HOSTS = config(
+BACKEND_PUBLIC_URL = config(
+    'BACKEND_PUBLIC_URL',
+    default='https://simplonservices.onrender.com'
+)
+
+ALLOWED_HOSTS = csv_env(
     'ALLOWED_HOSTS',
     default=(
         'simplonservices.onrender.com,'
@@ -37,7 +64,15 @@ ALLOWED_HOSTS = config(
         'simplon-services-back-q5ap.onrender.com,'
         'localhost,127.0.0.1'
     )
-).split(',')
+)
+
+backend_host = host_from_url(BACKEND_PUBLIC_URL)
+if backend_host and backend_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(backend_host)
+
+render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if render_host and render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_host)
 
 # Application definition
 INSTALLED_APPS = [
@@ -218,7 +253,7 @@ SIMPLE_JWT = {
 }
 
 # CORS Configuration - CORRIGÉ avec schémas https://
-CORS_ALLOWED_ORIGINS = config(
+CORS_ALLOWED_ORIGINS = csv_env(
     'CORS_ALLOWED_ORIGINS',
     default=(
         'https://simplonservices-ci.vercel.app,'
@@ -226,10 +261,10 @@ CORS_ALLOWED_ORIGINS = config(
         'http://localhost:3000,'
         'http://localhost:5173'
     )
-).split(',')
+)
 
 # CSRF Configuration - CORRIGÉ avec schémas https://
-CSRF_TRUSTED_ORIGINS = config(
+CSRF_TRUSTED_ORIGINS = csv_env(
     'CSRF_TRUSTED_ORIGINS',
     default=(
         'https://simplonservices-ci.vercel.app,'
@@ -237,7 +272,7 @@ CSRF_TRUSTED_ORIGINS = config(
         'http://localhost:3000,'
         'http://localhost:5173'
     )
-).split(',')
+)
 
 # Configuration CORS supplémentaire
 CORS_ALLOW_CREDENTIALS = True
@@ -321,6 +356,12 @@ DEFAULT_FROM_NAME = config('DEFAULT_FROM_NAME', default='Simplon Service')
 
 # Frontend configuration
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
+front_origin = origin_from_url(FRONTEND_URL)
+if front_origin:
+    if front_origin not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(front_origin)
+    if front_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(front_origin)
 COMPANY_NAME = config('COMPANY_NAME', default='Simplon')
 
 # Supabase storage configuration

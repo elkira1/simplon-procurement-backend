@@ -15,7 +15,6 @@ from pathlib import Path
 from datetime import timedelta
 import dj_database_url
 from decouple import config
-import cloudinary
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -48,7 +47,6 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
-    'cloudinary',
     
     # Local apps
     'core',
@@ -285,37 +283,39 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Email Configuration - Gmail SMTP
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_USE_SSL = False
-EMAIL_TIMEOUT = 30
+EMAIL_BACKEND = config('EMAIL_BACKEND', default=None)
+
+if not EMAIL_BACKEND:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend'
+
+EMAIL_PROVIDER = config('EMAIL_PROVIDER', default='smtp')
+
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=30, cast=int)
 
 # Utilisez les variables d'environnement (PAS de valeurs en dur!)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = config('EMAIL_HOST_USER')  # Doit être le même que EMAIL_HOST_USER
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default=None)
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default=None)
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER or 'no-reply@example.com')
+MAILJET_API_KEY = config('MAILJET_API_KEY', default=None)
+MAILJET_SECRET_KEY = config('MAILJET_SECRET_KEY', default=None)
 DEFAULT_FROM_NAME = config('DEFAULT_FROM_NAME', default='Simplon Service')
-
-# En développement, affichez les emails dans la console
-if DEBUG:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 # Frontend configuration
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
 COMPANY_NAME = config('COMPANY_NAME', default='Simplon')
 
-# Cloudinary configuration for file storage
-CLOUDINARY_API_KEY = config('CLOUDINARY_API_KEY', default='')
-CLOUDINARY_API_SECRET = config('CLOUDINARY_API_SECRET', default='')
-CLOUDINARY_CLOUD_NAME = config('CLOUDINARY_CLOUD_NAME', default='')
-
-cloudinary.config(
-    api_key=CLOUDINARY_API_KEY,
-    api_secret=CLOUDINARY_API_SECRET,
-    cloud_name=CLOUDINARY_CLOUD_NAME
-)
+# Supabase storage configuration
+SUPABASE_ENABLED = config('SUPABASE_ENABLED', default=False, cast=bool)
+SUPABASE_URL = config('SUPABASE_URL', default=None)
+SUPABASE_SERVICE_KEY = config('SUPABASE_SERVICE_KEY', default=None)
+SUPABASE_BUCKET = config('SUPABASE_BUCKET', default=None)
+SUPABASE_FOLDER = config('SUPABASE_FOLDER', default='attachments')
+SUPABASE_PUBLIC_BUCKET = config('SUPABASE_PUBLIC_BUCKET', default=False, cast=bool)
+SUPABASE_SIGNED_URL_TTL = config('SUPABASE_SIGNED_URL_TTL', default=3600, cast=int)
 
 # Logging configuration - Adapté pour Render (pas de fichiers logs)
 LOGGING = {

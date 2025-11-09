@@ -1,9 +1,15 @@
-import os
 import logging
-from django.core.mail import EmailMultiAlternatives
-from django.conf import settings
-from django.template.loader import render_to_string
 import threading
+from typing import Iterable, List, Optional, Sequence, Union
+
+from django.conf import settings
+
+from services.mail_providers import (
+    BaseMailProvider,
+    MailProviderError,
+    get_mail_provider,
+    strip_tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -11,45 +17,60 @@ class EmailService:
     def __init__(self):
         self.from_email = settings.DEFAULT_FROM_EMAIL
         self.from_name = settings.DEFAULT_FROM_NAME
+        try:
+            self.mail_provider: BaseMailProvider = get_mail_provider()
+        except MailProviderError as exc:  # pragma: no cover
+            logger.warning("Aucun fournisseur email disponible: %s", exc)
+            raise
 
-    def _send_email_async(self, subject, html_content, to_emails, text_content=None):
+    def _normalize_recipients(self, to_emails: Union[str, Sequence[str], None]) -> List[str]:
+        """
+        Transforme les destinataires en liste (suppression des doublons/valeurs vides).
+        """
+        if not to_emails:
+            return []
+
+        if isinstance(to_emails, str):
+            candidates: Iterable[Optional[str]] = [to_emails]
+        else:
+            candidates = to_emails
+
+        seen = set()
+        normalized: List[str] = []
+        for email in candidates:
+            if not email:
+                continue
+            if email in seen:
+                continue
+            normalized.append(email)
+            seen.add(email)
+        return normalized
+
+    def _send_email_async(self, subject: str, html_content: str, to_emails: Union[str, Sequence[str]], text_content: Optional[str] = None) -> bool:
         """
         Envoi asynchrone d'email pour ne pas bloquer les requêtes
         """
+        recipients = self._normalize_recipients(to_emails)
+
+        if not recipients:
+            logger.error("Aucun destinataire spécifié")
+            return False
+
         def send():
             try:
-                # Créer une variable locale pour éviter les problèmes de portée
-                recipients = to_emails
-                
-                if not recipients:
-                    logger.error("Aucun destinataire spécifié")
-                    return False
-                
-                if isinstance(recipients, str):
-                    recipients = [recipients]
-
-                # Créer l'email
-                email = EmailMultiAlternatives(
+                self.mail_provider.send(
                     subject=subject,
-                    body=text_content or self._html_to_text(html_content),
-                    from_email=f"{self.from_name} <{self.from_email}>",
-                    to=recipients,
-                    reply_to=[self.from_email]
+                    html_content=html_content,
+                    text_content=text_content or strip_tags(html_content),
+                    recipients=recipients,
+                    from_email=self.from_email,
+                    from_name=self.from_name,
                 )
-                
-                # Ajouter la version HTML
-                email.attach_alternative(html_content, "text/html")
-                
-                # Envoyer l'email
-                email.send(fail_silently=False)
-                
                 logger.info(f"Email envoyé avec succès à: {', '.join(recipients)}")
                 return True
                 
             except Exception as e:
-                # Gestion sécurisée de l'erreur
-                error_recipients = recipients if 'recipients' in locals() else 'destinataires inconnus'
-                logger.error(f"Erreur envoi email à {error_recipients}: {str(e)}")
+                logger.exception(f"Erreur envoi email à {', '.join(recipients)}: {str(e)}")
                 return False
         
         # Lancer l'envoi dans un thread séparé
@@ -57,18 +78,6 @@ class EmailService:
         thread.daemon = True
         thread.start()
         return True
-
-    def _html_to_text(self, html_content):
-        """
-        Conversion HTML vers texte brut
-        """
-        import re
-        # Supprimer les balises HTML
-        text = re.sub(r'<[^>]+>', '', html_content)
-        # Nettoyer les espaces multiples
-        text = re.sub(r'\n\s*\n', '\n\n', text)
-        text = re.sub(r'[ \t]+', ' ', text)
-        return text.strip()
 
     def send_welcome_email(self, user, created_by, generated_password):
         """
@@ -82,6 +91,16 @@ class EmailService:
             # Section département conditionnelle
             department_section = f'<div class="credential-item"><strong>🏢 Département :</strong> {user.department}</div>' if getattr(user, 'department', None) else ''
             department_text = f'Département : {user.department}' if getattr(user, 'department', None) else ''
+
+            password_instruction_html = (
+                "Ce mot de passe est temporaire. Connectez-vous puis changez-le immédiatement "
+                "depuis votre profil (menu &laquo;&nbsp;Paramètres&nbsp;&raquo;)."
+            )
+
+            password_instruction_text = (
+                "Ce mot de passe est temporaire. Connectez-vous puis changez-le immédiatement "
+                "depuis votre profil (menu \"Paramètres\")."
+            )
 
             html_content = f"""
             <!DOCTYPE html>
@@ -105,7 +124,7 @@ class EmailService:
             <body>
                 <div class="container">
                     <div class="header">
-                        <h1>🎉 Bienvenue sur {settings.COMPANY_NAME} !</h1>
+                        <h1>🎉 Bienvenue Dans la Team {settings.COMPANY_NAME} !</h1>
                     </div>
                     
                     <div class="content">
@@ -136,7 +155,7 @@ class EmailService:
                         </div>
                         
                         <div class="warning">
-                            <strong>⚠️ Important :</strong> Pour votre sécurité, nous vous recommandons fortement de modifier votre mot de passe lors de votre première connexion. Vous pouvez le faire dans la section "Paramètres" de votre profil.
+                            <strong>⚠️ Important :</strong> {password_instruction_html}
                         </div>
                         
                         <div style="text-align: center;">
@@ -174,7 +193,7 @@ Mot de passe temporaire : {generated_password}
 Rôle : {role_display}
 {department_text}
 
-IMPORTANT : Pour votre sécurité, nous vous recommandons fortement de modifier votre mot de passe lors de votre première connexion. Vous pouvez le faire dans la section "Paramètres" de votre profil.
+IMPORTANT : {password_instruction_text}
 
 Lien de connexion : {settings.FRONTEND_URL}/login
 

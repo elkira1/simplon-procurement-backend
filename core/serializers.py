@@ -1,12 +1,22 @@
 # core/serializers.py
-from rest_framework import serializers
-from django.contrib.auth import get_user_model
-from .models import PurchaseRequest, RequestStep, Attachment, PasswordResetCode, UserActivity
-from services.email_service import EmailService
-from django.contrib.auth.hashers import check_password
-import string
+import logging
 import secrets
+import string
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import check_password
+from rest_framework import serializers
+
+from services.email_service import EmailService
+from services.supabase_storage_service import (
+    SupabaseStorageError,
+    SupabaseStorageService,
+)
+
+from .models import Attachment, PasswordResetCode, PurchaseRequest, RequestStep, UserActivity
+
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -177,7 +187,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             email_sent = welcome_sent  
             
         except Exception as e:
-            print(f"Erreur lors de l'envoi des emails: {str(e)}")
+            logger.error("Erreur lors de l'envoi des emails de bienvenue: %s", e, exc_info=True)
             email_sent = False
         
         user.email_sent = email_sent
@@ -327,105 +337,52 @@ class UserActivitySerializer(serializers.ModelSerializer):
 class AttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.CharField(source='uploaded_by.username', read_only=True)
     file_size_mb = serializers.ReadOnlyField()
-    
+    file_url = serializers.SerializerMethodField()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._supabase_service = None
+        self._supabase_service_attempted = False
+
     class Meta:
         model = Attachment
-        fields = ['id', 'file_url', 'file_type', 'description', 'request', 'uploaded_by', 'uploaded_by_name', 'file_size_mb', 'created_at']
-        read_only_fields = ['id', 'uploaded_by', 'created_at']
-    
-    def validate_file(self, value):
-        """Validation spécifique du fichier"""
-        print(f"AttachmentSerializer validate_file - File: {value}")
-        print(f"  - Name: {value.name if value else 'None'}")
-        print(f"  - Size: {value.size if value else 'None'}")
-        print(f"  - Content type: {getattr(value, 'content_type', 'Unknown')}")
-        
-        if not value:
-            raise serializers.ValidationError("Aucun fichier fourni")
-        
-        if value.size == 0:
-            raise serializers.ValidationError("Le fichier est vide")
-        
-        max_size = 10 * 1024 * 1024  # 10MB
-        if value.size > max_size:
-            raise serializers.ValidationError(
-                f"Le fichier est trop volumineux ({value.size} bytes). Taille maximale: {max_size} bytes (10MB)"
-            )
-        
-        allowed_types = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg']
-        content_type = getattr(value, 'content_type', None)
-        
-        if content_type not in allowed_types:
-            raise serializers.ValidationError(
-                f"Format de fichier non supporté: {content_type}. "
-                f"Formats acceptés: {', '.join(allowed_types)}"
-            )
-        
+        fields = [
+            'id',
+            'file_url',
+            'file_type',
+            'description',
+            'request',
+            'uploaded_by',
+            'uploaded_by_name',
+            'file_size',
+            'file_size_mb',
+            'mime_type',
+            'storage_public_id',
+            'storage_resource_type',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'uploaded_by', 'file_size', 'mime_type', 'storage_public_id', 'storage_resource_type', 'created_at']
+
+    def get_file_url(self, obj):
+        if obj.storage_resource_type == 'supabase' and obj.storage_public_id:
+            service = self._get_supabase_service()
+            if service:
+                try:
+                    return service.get_file_url(obj.storage_public_id)
+                except SupabaseStorageError as exc:
+                    logger.warning("Impossible de générer l'URL Supabase pour l'attachement %s: %s", obj.id, exc)
+        return obj.file_url
+
+    def _get_supabase_service(self):
+        if self._supabase_service_attempted:
+            return self._supabase_service
+        self._supabase_service_attempted = True
         try:
-            current_position = value.tell() if hasattr(value, 'tell') else 0
-            
-            if hasattr(value, 'seek'):
-                value.seek(0)
-            
-            test_chunk = value.read(100) 
-            
-            if len(test_chunk) == 0:
-                raise serializers.ValidationError("Impossible de lire le contenu du fichier")
-            
-            if hasattr(value, 'seek'):
-                value.seek(current_position)
-                
-        except Exception as e:
-            raise serializers.ValidationError(f"Erreur lors de la lecture du fichier: {str(e)}")
-        
-        print(f"File validation successful for: {value.name}")
-        return value
-    
-    def validate_request(self, value):
-        """Validation de la demande d'achat"""
-        print(f"AttachmentSerializer validate_request - Request: {value}")
-        
-        if not value:
-            raise serializers.ValidationError("La demande d'achat est requise")
-        
-        try:
-            from .models import PurchaseRequest
-            if hasattr(value, 'pk'):
-                request_id = value.pk
-            else:
-                request_id = value
-            
-            purchase_request = PurchaseRequest.objects.get(pk=request_id)
-            print(f"Purchase request found: {purchase_request}")
-            return value
-        except PurchaseRequest.DoesNotExist:
-            raise serializers.ValidationError("La demande d'achat n'existe pas")
-        except Exception as e:
-            raise serializers.ValidationError(f"Erreur lors de la vérification de la demande: {str(e)}")
-    
-    def validate(self, data):
-        """Validation globale"""
-        print(f"AttachmentSerializer validate - data keys: {list(data.keys())}")
-        
-        request_obj = data.get('request')
-        file_obj = data.get('file')
-        
-        if request_obj and file_obj:
-            print(f"Both request and file present in validation")
-        
-        return data
-    
-    def create(self, validated_data):
-        """Création avec logging supplémentaire"""
-        print(f"Creating attachment with data: {validated_data}")
-        
-        try:
-            instance = super().create(validated_data)
-            print(f"Attachment created successfully: {instance}")
-            return instance
-        except Exception as e:
-            print(f"Error creating attachment: {e}")
-            raise
+            self._supabase_service = SupabaseStorageService()
+        except SupabaseStorageError as exc:
+            logger.debug("Supabase Storage non disponible pour la sérialisation: %s", exc)
+            self._supabase_service = None
+        return self._supabase_service
 
 class RequestStepSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source='user.username', read_only=True)
@@ -520,8 +477,12 @@ class ValidateRequestSerializer(serializers.Serializer):
         action = data.get('action')
         user_role = self.context['request'].user.role
         
-        print(f"Serializer validation - Action: {action}, User role: {user_role}")
-        print(f"Serializer validation - Data: {data}")
+        logger.debug(
+            "ValidateRequestSerializer - action=%s, user_role=%s, data=%s",
+            action,
+            user_role,
+            data,
+        )
         
         if user_role == 'accounting' and action == 'approve':
             if 'budget_available' not in data:

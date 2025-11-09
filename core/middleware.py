@@ -12,9 +12,9 @@ class CookieJWTMiddleware(MiddlewareMixin):
         re.compile(r'^/admin/'),
         re.compile(r'^/static/'),
         re.compile(r'^/media/'),
-        re.compile(r'^/api/auth/login/'),
-        re.compile(r'^/api/auth/refresh/'),
-        re.compile(r'^/api/auth/password-reset/'),
+        re.compile(r'^/(api/)?auth/login/'),
+        re.compile(r'^/(api/)?auth/refresh/'),
+        re.compile(r'^/(api/)?auth/password-reset/'),
     ]
     
     def process_view(self, request, view_func, view_args, view_kwargs):

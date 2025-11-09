@@ -219,6 +219,9 @@ class Attachment(models.Model):
         ('quote', 'Devis'),
         ('invoice', 'Facture'),
         ('justification', 'Justificatif'),
+        ('pdf', 'PDF'),
+        ('jpeg', 'Image JPEG'),
+        ('png', 'Image PNG'),
         ('other', 'Autre')
     ]
     
@@ -228,6 +231,10 @@ class Attachment(models.Model):
     description = models.CharField("Description", max_length=200, blank=True)
     uploaded_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
+    storage_public_id = models.CharField(max_length=255, blank=True, null=True)
+    storage_resource_type = models.CharField(max_length=20, blank=True, null=True)
+    file_size = models.BigIntegerField(blank=True, null=True)
+    mime_type = models.CharField(max_length=120, blank=True, null=True)
     
     class Meta:
         verbose_name = "Pièce jointe"
@@ -239,8 +246,7 @@ class Attachment(models.Model):
     @property
     def file_size_mb(self):
         """Retourne la taille du fichier en MB"""
-        if self.file:
-            return round(self.file.size / (1024 * 1024), 2)
-        return 
+        if self.file_size is not None:
+            return round(self.file_size / (1024 * 1024), 2)
+        return None
     
-

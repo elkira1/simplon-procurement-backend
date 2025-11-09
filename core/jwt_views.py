@@ -160,8 +160,7 @@ class LogoutView(TokenRefreshView):
         }
 
     def post(self, request, *args, **kwargs):
-        print("=== DÉBUT LOGOUT SERVEUR ===")
-        print(f"Cookies reçus: {list(request.COOKIES.keys())}")
+        logger.debug("Logout request received - cookies=%s", list(request.COOKIES.keys()))
 
         response = Response({
             'message': 'Déconnexion réussie',
@@ -173,6 +172,5 @@ class LogoutView(TokenRefreshView):
         response.delete_cookie('access_token', **cookie_settings)
         response.delete_cookie('refresh_token', **cookie_settings)
 
-        print("✓ Cookies supprimés côté serveur")
-        print("=== FIN LOGOUT SERVEUR ===")
+        logger.debug("Logout completed - cookies supprimés côté serveur")
         return response

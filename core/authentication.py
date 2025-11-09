@@ -58,9 +58,9 @@ class CookieJWTAuthentication(JWTAuthentication):
         re.compile(r'^/admin/'),
         re.compile(r'^/static/'),
         re.compile(r'^/media/'),
-        re.compile(r'^/api/auth/login/'),
-        re.compile(r'^/api/auth/refresh/'),
-        re.compile(r'^/api/auth/password-reset/'),
+        re.compile(r'^/(api/)?auth/login/'),
+        re.compile(r'^/(api/)?auth/refresh/'),
+        re.compile(r'^/(api/)?auth/password-reset/'),
     ]
     
     def is_excluded_path(self, request):
@@ -85,7 +85,10 @@ class CookieJWTAuthentication(JWTAuthentication):
         raw_token = request.COOKIES.get('access_token')
         
         if not raw_token:
-            logger.debug(f"[CookieJWT] Aucun token dans les cookies pour: {request.path}")
+            logger.debug(
+                f"[CookieJWT] Aucun token dans les cookies pour: {request.path}. "
+                f"Cookies présents: {list(request.COOKIES.keys())}"
+            )
             return None
 
         try:
@@ -133,9 +136,9 @@ class CookieJWTMiddleware(MiddlewareMixin):
         re.compile(r'^/admin/'),
         re.compile(r'^/static/'),
         re.compile(r'^/media/'),
-        re.compile(r'^/api/auth/login/'),
-        re.compile(r'^/api/auth/refresh/'),
-        re.compile(r'^/api/auth/password-reset/'),
+        re.compile(r'^/(api/)?auth/login/'),
+        re.compile(r'^/(api/)?auth/refresh/'),
+        re.compile(r'^/(api/)?auth/password-reset/'),
     ]
     
     def is_excluded_path(self, path):
@@ -160,7 +163,10 @@ class CookieJWTMiddleware(MiddlewareMixin):
             request.META['HTTP_AUTHORIZATION'] = f'Bearer {access_token}'
             logger.debug(f"[CookieMiddleware] Token injecté dans header pour: {path}")
         else:
-            logger.debug(f"[CookieMiddleware] Aucun token dans les cookies pour: {path}")
+            logger.debug(
+                f"[CookieMiddleware] Aucun token dans les cookies pour: {path}. "
+                f"Cookies reçus: {list(request.COOKIES.keys())}"
+            )
         
         return None
 

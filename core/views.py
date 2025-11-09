@@ -1,4 +1,5 @@
 import secrets
+from decimal import Decimal, InvalidOperation
 from django.shortcuts import render
 from django.contrib.auth import get_user_model
 
@@ -25,10 +26,13 @@ from django.core.paginator import Paginator
 from django.db.models.functions import Extract
 from django.conf import settings
 import logging
-import cloudinary
 
 from rest_framework.permissions import AllowAny
 from services.email_service import EmailService
+from services.supabase_storage_service import (
+    SupabaseStorageService,
+    SupabaseStorageError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +40,42 @@ logger = logging.getLogger(__name__)
 
 
 User = get_user_model()
+
+# Mapping des filtres par rôle pour les listes de demandes
+ROLE_REQUEST_FILTERS = {
+    'employee': lambda user: Q(user=user),
+    'mg': lambda user: None,  # Aucun filtre, accès complet
+    'accounting': lambda user: (
+        Q(status__in=['mg_approved', 'accounting_reviewed', 'director_approved']) |
+        Q(status='rejected', rejected_by_role='accounting') |
+        Q(rejected_by=user.id, rejected_by_role='accounting')
+    ),
+    'director': lambda user: (
+        Q(status__in=['accounting_reviewed', 'director_approved']) |
+        Q(status='rejected', rejected_by_role='director') |
+        Q(rejected_by=user.id, rejected_by_role='director')
+    ),
+}
+
+# Actions autorisées par rôle sur une demande en fonction du statut actuel
+ALLOWED_STATUS_BY_ROLE = {
+    'mg': {'pending'},
+    'accounting': {'mg_approved'},
+    'director': {'accounting_reviewed'},
+}
+
+
+def get_purchase_requests_queryset_for_user(user):
+    """Retourne le queryset filtré selon le rôle de l'utilisateur."""
+    base_queryset = PurchaseRequest.objects.all()
+    role = getattr(user, 'role', None)
+    filter_builder = ROLE_REQUEST_FILTERS.get(role)
+
+    if not filter_builder:
+        return base_queryset.none()
+
+    role_filter = filter_builder(user)
+    return base_queryset if role_filter is None else base_queryset.filter(role_filter)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -275,7 +315,7 @@ def users_list(request):
     
     }
     
-    print(f"users_created_last_7_days: {stats['users_created_last_7_days']}")
+    logger.debug("Users created last 7 days (by %s): %s", request.user.username, stats['users_created_last_7_days'])
     
     creators = User.objects.filter(
         created_users__isnull=False
@@ -426,33 +466,89 @@ def purchase_requests_list(request):
     """Liste des demandes d'achat + Création d'une nouvelle demande"""
     
     if request.method == 'GET':
-        user_role = request.user.role
-        user_id = request.user.id
-        print(repr(settings.FRONTEND_URL))
-        
-        if user_role == 'employee':
-            queryset = PurchaseRequest.objects.filter(user=request.user)
-        elif user_role == 'mg':
-            queryset = PurchaseRequest.objects.all()
-        elif user_role == 'accounting':
-            queryset = PurchaseRequest.objects.filter(
-                Q(status__in=['mg_approved', 'accounting_reviewed', 'director_approved']) |
-                Q(status='rejected', rejected_by_role='accounting') |
-                Q(rejected_by=user_id, rejected_by_role='accounting')
+        frontend_url = getattr(settings, 'FRONTEND_URL', None)
+        logger.debug("Resolved frontend URL for request list: %s", frontend_url)
+
+        queryset = get_purchase_requests_queryset_for_user(request.user).select_related(
+            'user',
+            'rejected_by',
+        )
+
+        # Filtres dynamiques
+        query_params = request.query_params
+        status_filter = query_params.get('status')
+        urgency_filter = query_params.get('urgency')
+        search_term = query_params.get('search')
+        created_by = query_params.get('created_by')
+        date_from = query_params.get('date_from')
+        date_to = query_params.get('date_to')
+        min_amount = query_params.get('min_amount')
+        max_amount = query_params.get('max_amount')
+
+        if status_filter:
+            if status_filter == 'in_progress':
+                queryset = queryset.filter(status__in=['mg_approved', 'accounting_reviewed'])
+            else:
+                queryset = queryset.filter(status=status_filter)
+
+        if urgency_filter:
+            queryset = queryset.filter(urgency=urgency_filter)
+
+        if created_by:
+            if created_by == 'me':
+                queryset = queryset.filter(user=request.user)
+            elif created_by.isdigit():
+                queryset = queryset.filter(user_id=int(created_by))
+
+        if search_term:
+            queryset = queryset.filter(
+                Q(item_description__icontains=search_term) |
+                Q(justification__icontains=search_term) |
+                Q(user__username__icontains=search_term) |
+                Q(user__first_name__icontains=search_term) |
+                Q(user__last_name__icontains=search_term)
             )
-        elif user_role == 'director':
-            queryset = PurchaseRequest.objects.filter(
-                Q(status__in=['accounting_reviewed', 'director_approved']) |
-                Q(status='rejected', rejected_by_role='director') |
-                Q(rejected_by=user_id, rejected_by_role='director')
-            )
-        else:
-            queryset = PurchaseRequest.objects.none()
-        
-        queryset = queryset.select_related('user', 'rejected_by').order_by('-created_at')
+
+        if date_from:
+            try:
+                start = datetime.strptime(date_from, "%Y-%m-%d")
+                queryset = queryset.filter(created_at__date__gte=start.date())
+            except ValueError:
+                logger.warning("Invalid date_from format received: %s", date_from)
+
+        if date_to:
+            try:
+                end = datetime.strptime(date_to, "%Y-%m-%d")
+                queryset = queryset.filter(created_at__date__lte=end.date())
+            except ValueError:
+                logger.warning("Invalid date_to format received: %s", date_to)
+
+        def _apply_amount_filter(value, lookup, qs):
+            try:
+                amount = Decimal(value)
+                return qs.filter(**{lookup: amount})
+            except (InvalidOperation, TypeError):
+                logger.warning("Invalid amount filter provided: %s", value)
+                return qs
+
+        if min_amount:
+            queryset = _apply_amount_filter(min_amount, 'estimated_cost__gte', queryset)
+        if max_amount:
+            queryset = _apply_amount_filter(max_amount, 'estimated_cost__lte', queryset)
+
+        ordering = query_params.get('ordering', '-created_at')
+        allowed_ordering = {'created_at', '-created_at', 'estimated_cost', '-estimated_cost', 'urgency', '-urgency'}
+        if ordering not in allowed_ordering:
+            ordering = '-created_at'
+
+        queryset = queryset.order_by(ordering)
         
         paginator = PageNumberPagination()
-        paginator.page_size = 20
+        try:
+            page_size = int(query_params.get('page_size', 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        paginator.page_size = max(1, min(page_size, 100))
         page = paginator.paginate_queryset(queryset, request)
         
         serializer = PurchaseRequestListSerializer(page, many=True)
@@ -466,14 +562,23 @@ def purchase_requests_list(request):
             )
 
         auto_validate_mg = request.data.get('auto_validate_mg', False)
-        print(f"Auto-validate MG flag: {auto_validate_mg}, User role: {request.user.role}")
+        logger.debug(
+            "Purchase request creation by %s (%s) with auto_validate_mg=%s",
+            request.user.username,
+            request.user.role,
+            auto_validate_mg,
+        )
         
         serializer = PurchaseRequestCreateSerializer(data=request.data)
         if serializer.is_valid():
             purchase_request = serializer.save(user=request.user)
             
             if auto_validate_mg and request.user.role == 'mg':
-                print(f"Auto-validating request {purchase_request.id} for MG user {request.user.username}")
+                logger.info(
+                    "Auto-validating request %s for MG user %s",
+                    purchase_request.id,
+                    request.user.username,
+                )
                 
                 purchase_request.status = 'mg_approved'
                 purchase_request.mg_validated_by = request.user
@@ -487,7 +592,11 @@ def purchase_requests_list(request):
                     comment="Auto-validé par le créateur (Moyens Généraux)"
                 )
                 
-                print(f"Request {purchase_request.id} auto-validated. New status: {purchase_request.status}")
+                logger.debug(
+                    "Request %s auto-validated; new status %s",
+                    purchase_request.id,
+                    purchase_request.status,
+                )
                
             try:
                 
@@ -548,30 +657,31 @@ def validate_request(request, pk):
     action = request.data.get('action')
     comment = request.data.get('comment', '')
 
-    print(f"Action: {action}, Comment: {comment}, User Role: {user_role}")
-    print(f"Request Status: {purchase_request.status}")
-    print(f"Request data: {request.data}")
+    logger.debug(
+        "Validation action received: action=%s, comment=%s, user=%s(%s), request_status=%s",
+        action,
+        comment,
+        request.user.username,
+        user_role,
+        purchase_request.status,
+    )
     
-    can_validate = False
-    
-    if action == 'reject':
-        if user_role == 'mg' and purchase_request.status == 'pending':
-            can_validate = True
-        elif user_role == 'accounting' and purchase_request.status == 'mg_approved':
-            can_validate = True
-        elif user_role == 'director' and purchase_request.status == 'accounting_reviewed':
-            can_validate = True
-    elif action == 'approve':
-        if user_role == 'mg' and purchase_request.status == 'pending':
-            can_validate = True
-        elif user_role == 'accounting' and purchase_request.status == 'mg_approved':
-            can_validate = True
-        elif user_role == 'director' and purchase_request.status == 'accounting_reviewed':
-            can_validate = True
-    
-    
-    
-    if not can_validate:
+    if action not in {'approve', 'reject'}:
+        return Response(
+            {'error': f"Action '{action}' non supportée"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    allowed_statuses = ALLOWED_STATUS_BY_ROLE.get(user_role, set())
+
+    if purchase_request.status not in allowed_statuses:
+        logger.warning(
+            "Refus de validation: user=%s (%s), action=%s, status=%s",
+            request.user.username,
+            user_role,
+            action,
+            purchase_request.status,
+        )
         return Response(
             {'error': f'Vous ne pouvez pas agir sur cette demande à cette étape. Status: {purchase_request.status}, Role: {user_role}'}, 
             status=status.HTTP_403_FORBIDDEN
@@ -598,7 +708,7 @@ def validate_request(request, pk):
                     purchase_request.mg_validated_by = request.user  
                     purchase_request.mg_validated_at = timezone.now() 
                     
-                    if final_cost:
+                    if final_cost is not None:
                         purchase_request.final_cost = final_cost 
             elif user_role == 'accounting':
                     purchase_request.status = 'accounting_reviewed'
@@ -606,7 +716,7 @@ def validate_request(request, pk):
                     purchase_request.accounting_validated_by = request.user  
                     purchase_request.accounting_validated_at = timezone.now()
                       
-                    if final_cost:
+                    if final_cost is not None:
                         purchase_request.final_cost = final_cost
             elif user_role == 'director':
                     purchase_request.status = 'director_approved'
@@ -622,11 +732,23 @@ def validate_request(request, pk):
             comment=comment,
             budget_check=budget_available if user_role == 'accounting' else None
         )
+
+        UserActivity.objects.create(
+            user=purchase_request.user,
+            performed_by=request.user,
+            action='updated',
+            details={
+                'request_id': purchase_request.id,
+                'action': action,
+                'status': purchase_request.status
+            },
+            ip_address=get_client_ip(request)
+        )
         
         detail_serializer = PurchaseRequestDetailSerializer(purchase_request)
         return Response(detail_serializer.data)
     else:
-        print(f"Serializer errors: {serializer.errors}")
+        logger.warning("Validation errors while processing request %s: %s", purchase_request.id, serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -658,8 +780,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.conf import settings
-import cloudinary
-import cloudinary.uploader
 import os
 import uuid
 import logging
@@ -680,19 +800,10 @@ def attachments_list(request):
         else:
             attachments = Attachment.objects.all()
         
-        serializer = AttachmentSerializer(attachments, many=True)
+        serializer = AttachmentSerializer(attachments, many=True, context={'request': request})
         return Response(serializer.data)
     
     elif request.method == 'POST':
-        print("=" * 50)
-        print("DEBUG - Upload attachment")
-        print(f"request.data: {request.data}")
-        print(f"request.FILES: {request.FILES}")
-        print("=" * 50)
-
-        # DEBUG: Vérifier l'utilisateur authentifié
-        print(f"🔐 Utilisateur authentifié: {request.user.username} (ID: {request.user.id})")
-
         if 'file' not in request.FILES:
             return Response({'error': "Le fichier est requis"}, status=400)
         
@@ -727,85 +838,63 @@ def attachments_list(request):
             return Response({'error': 'Vous ne pouvez pas ajouter de pièce jointe à cette étape'}, status=403)
 
         try:
-            # Vérifier si Cloudinary est configuré
-            cloudinary_configured = all([
-                getattr(settings, 'CLOUDINARY_CLOUD_NAME', None),
-                getattr(settings, 'CLOUDINARY_API_KEY', None), 
-                getattr(settings, 'CLOUDINARY_API_SECRET', None)
-            ])
-            
-            if cloudinary_configured:
-                # Utiliser Cloudinary
-                return handle_cloudinary_upload(request, uploaded_file, purchase_request)
-            else:
-                # Fallback vers le stockage local
-                return handle_local_upload(request, uploaded_file, purchase_request)
-                
+            if getattr(settings, 'SUPABASE_ENABLED', False):
+                return handle_supabase_upload(request, uploaded_file, purchase_request)
+            return handle_local_upload(request, uploaded_file, purchase_request)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            logger.error(f"Erreur lors de l'upload: {str(e)}")
+            logger.exception("Erreur lors de l'upload pour la demande %s", request_id)
             return Response({'error': f'Erreur lors de l\'upload: {str(e)}'}, status=500)
 
 
-def handle_cloudinary_upload(request, uploaded_file, purchase_request):
-    """Gestion de l'upload avec Cloudinary"""
-    try:
-        # Reconfigurer Cloudinary pour être sûr
-        cloudinary.config(
-            cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-            api_key=settings.CLOUDINARY_API_KEY,
-            api_secret=settings.CLOUDINARY_API_SECRET,
-            secure=True
-        )
-        
-        # Déterminer le bon resource_type
-        content_type = uploaded_file.content_type
-        if content_type == 'application/pdf':
-            resource_type = 'pdf'
-            print("Fichier PDF détecté - utilisation de resource_type: 'pdf'")
-        else:
-            resource_type = 'auto'
-            print("Fichier image détecté - utilisation de resource_type: 'auto'")
-        
-        print("🔄 Tentative d'upload Cloudinary...")
-        
-        result = cloudinary.uploader.upload(
-            uploaded_file,
-            folder='attachments',
-            resource_type=resource_type,  # Utiliser le bon type
-            access_mode='public',  # S'assurer que le fichier est public
-            type='upload'
-        )
-        
-        print(f"Result Upload: {result}")
-        print(f"Secure URL File: {result['secure_url']}")
-        print(f"Resource Type: {result.get('resource_type', 'unknown')}")
-        print(f"Access Mode: {result.get('access_mode', 'non spécifié')}")
+def handle_supabase_upload(request, uploaded_file, purchase_request):
+    """Gestion de l'upload via Supabase Storage."""
+    if not getattr(settings, 'SUPABASE_ENABLED', False):
+        raise SupabaseStorageError("Supabase Storage est désactivé.")
 
-        # Déterminer le type de fichier pour la base de données
-        if resource_type == 'pdf' or content_type == 'application/pdf':
+    try:
+        folder = settings.SUPABASE_FOLDER or 'attachments'
+        extension = os.path.splitext(uploaded_file.name)[1]
+        unique_filename = f"{uuid.uuid4()}{extension}"
+        storage_path = f"{folder}/{purchase_request.id}/{unique_filename}"
+
+        service = SupabaseStorageService()
+        public_url = service.upload(
+            uploaded_file,
+            storage_path,
+            content_type=getattr(uploaded_file, 'content_type', None)
+        )
+
+        provided_type = request.data.get('file_type')
+        content_type = getattr(uploaded_file, 'content_type', '') or ''
+        if provided_type:
+            file_type = provided_type
+        elif content_type == 'application/pdf':
             file_type = 'pdf'
+        elif content_type.startswith('image/'):
+            file_type = content_type.split('/')[-1]
         else:
-            file_type = result.get('format', uploaded_file.content_type.split('/')[-1])
+            file_type = 'other'
 
         attachment = Attachment.objects.create(
-            file_url=result['secure_url'], 
-            file_type=file_type,  
+            file_url=public_url,
+            file_type=file_type,
             request=purchase_request,
             uploaded_by=request.user,
             description=request.data.get('description', ''),
-          
+            storage_public_id=storage_path,
+            storage_resource_type='supabase',
+            file_size=uploaded_file.size,
+            mime_type=content_type,
         )
 
-        logger.info(f"Fichier uploadé avec succès sur Cloudinary: {result['secure_url']}")
-        return Response(AttachmentSerializer(attachment).data, status=201)
-
-    except Exception as e:
-        logger.error(f"Erreur Cloudinary: {str(e)}")
-        # Fallback vers le stockage local en cas d'erreur Cloudinary
-        print("Erreur Cloudinary, fallback vers le stockage local...")
-        return handle_local_upload(request, uploaded_file, purchase_request)
+        logger.info("Fichier uploadé sur Supabase: %s", storage_path)
+        return Response(
+            AttachmentSerializer(attachment, context={'request': request}).data,
+            status=201,
+        )
+    except SupabaseStorageError as exc:
+        logger.error("Erreur Supabase Storage: %s", exc)
+        return Response({'error': str(exc)}, status=500)
 
 
 def handle_local_upload(request, uploaded_file, purchase_request):
@@ -835,7 +924,10 @@ def handle_local_upload(request, uploaded_file, purchase_request):
         
         # Déterminer le type de fichier pour le stockage local
         content_type = uploaded_file.content_type
-        if content_type == 'application/pdf':
+        provided_type = request.data.get('file_type')
+        if provided_type:
+            file_type_display = provided_type
+        elif content_type == 'application/pdf':
             file_type_display = 'pdf'
         elif content_type.startswith('image/'):
             file_type_display = content_type.split('/')[1]  # jpeg, png, etc.
@@ -847,14 +939,14 @@ def handle_local_upload(request, uploaded_file, purchase_request):
             file_type=file_type_display,
             request=purchase_request,
             uploaded_by=request.user,
-            description=description
+            description=description,
+            storage_resource_type='local',
+            file_size=uploaded_file.size,
+            mime_type=uploaded_file.content_type,
         )
-        
+
         logger.info(f"Fichier uploadé localement: {file_path}")
-        print(f"Fichier sauvegardé localement: {file_path}")
-        print(f"URL relative: {relative_url}")
-        
-        return Response(AttachmentSerializer(attachment).data, status=201)
+        return Response(AttachmentSerializer(attachment, context={'request': request}).data, status=201)
         
     except Exception as e:
         logger.error(f"Erreur upload local: {str(e)}", exc_info=True)
@@ -887,7 +979,23 @@ def attachment_delete(request, pk):
             {'error': 'Vous ne pouvez pas supprimer cette pièce jointe à cette étape'}, 
             status=status.HTTP_403_FORBIDDEN
         )
-    
+
+    # Supprimer le fichier du stockage externe si nécessaire
+    if getattr(settings, 'SUPABASE_ENABLED', False) and attachment.storage_public_id:
+        try:
+            SupabaseStorageService().delete(attachment.storage_public_id)
+        except SupabaseStorageError as exc:
+            logger.warning("Suppression Supabase impossible: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Erreur lors de la suppression Supabase: %s", exc, exc_info=True)
+    elif attachment.file_url and attachment.file_url.startswith('/media/'):
+        local_path = os.path.join(str(settings.BASE_DIR), attachment.file_url.lstrip('/'))
+        if os.path.exists(local_path):
+            try:
+                os.remove(local_path)
+            except OSError as exc:  # pragma: no cover
+                logger.warning("Impossible de supprimer le fichier local %s: %s", local_path, exc)
+
     attachment.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1070,7 +1178,7 @@ def dashboard(request):
             return result[:5]  
             
         except Exception as e:
-            print(f"Erreur dans get_department_stats: {e}")
+            logger.error("Erreur dans get_department_stats: %s", e, exc_info=True)
             return [{
                 'department': 'Données indisponibles',
                 'requests_count': all_requests.count()
@@ -1371,26 +1479,13 @@ def dashboard(request):
     
     data['requests_by_status'] = requests_by_status
     
-    print(f"Dashboard data for {user_role} (ID: {user_id}):")
-    print(f"Total requests: {data.get('total_requests', data.get('mes_demandes', 0))}")
-    print(f"Department stats: {data.get('department_stats', [])}")
-    if 'trends' in data:
-        print(f"Trends data: {data['trends']}")
-    if user_role == 'mg':
-        print(f"Mes demandes: {data.get('mes_demandes', 0)}")
-        print(f"En cours: {data.get('en_cours', 0)}")
-        print(f"Acceptées: {data.get('acceptees', 0)}")
-        print(f"Refusées: {data.get('refusees', 0)}")
-    elif user_role == 'accounting':
-        print(f"Mes demandes: {data.get('mes_demandes', 0)}")
-        print(f"En cours: {data.get('en_cours', 0)}")  
-        print(f"Acceptées: {data.get('acceptees', 0)}")
-        print(f"Refusées: {data.get('refusees', 0)}")
-    elif user_role == 'director':
-        print(f"Mes demandes: {data.get('mes_demandes', 0)}")
-        print(f"En cours: {data.get('en_cours', 0)}")
-        print(f"Acceptées: {data.get('acceptees', 0)}")  
-        print(f"Refusées: {data.get('refusees', 0)}")
+    logger.debug(
+        "Dashboard data compiled for %s (ID %s): total=%s, status_breakdown=%s",
+        user_role,
+        user_id,
+        data.get('total_requests', data.get('mes_demandes', 0)),
+        data.get('requests_by_status'),
+    )
     
     return Response(data)
 
@@ -1416,11 +1511,12 @@ def debug_auth(request):
         'path': request.path,
     }
     
-    print("=== DEBUG AUTH ===")
-    print(f"User: {request.user}")
-    print(f"Cookies: {request.COOKIES}")
-    print(f"Authorization header: {request.META.get('HTTP_AUTHORIZATION')}")
-    print("==================")
+    logger.debug(
+        "DEBUG AUTH - user=%s, cookies=%s, authorization=%s",
+        request.user,
+        list(request.COOKIES.keys()),
+        request.META.get('HTTP_AUTHORIZATION'),
+    )
     
     return Response(debug_info, status=status.HTTP_200_OK)
 
@@ -1470,13 +1566,12 @@ def test_cookies(request):
         result['token_valid'] = False
         result['token_error'] = "Pas de token access_token dans les cookies"
     
-    print("=== TEST COOKIES ===")
-    print(f"Cookies reçus: {cookies}")
-    print(f"Access token présent: {bool(access_token)}")
-    print(f"Refresh token présent: {bool(refresh_token)}")
-    if access_token:
-        print(f"Access token (50 premiers chars): {access_token[:50]}...")
-    print("====================")
+    logger.debug(
+        "TEST COOKIES - count=%s, access_token=%s, refresh_token=%s",
+        len(cookies),
+        bool(access_token),
+        bool(refresh_token),
+    )
     
     return Response(result, status=status.HTTP_200_OK)
 
@@ -1553,12 +1648,12 @@ def test_set_cookie(request):
         path='/'
     )
     
-    print("=== TEST SET COOKIE ===")
-    print(f"Origin: {request.META.get('HTTP_ORIGIN', 'None')}")
-    print(f"Host: {request.META.get('HTTP_HOST', 'None')}")
-    print(f"User-Agent: {request.META.get('HTTP_USER_AGENT', 'None')[:50]}...")
-    print("Cookies de test définis")
-    print("=======================")
+    logger.debug(
+        "TEST SET COOKIE - origin=%s, host=%s, user_agent=%s",
+        request.META.get('HTTP_ORIGIN', 'None'),
+        request.META.get('HTTP_HOST', 'None'),
+        request.META.get('HTTP_USER_AGENT', 'None')[:50],
+    )
     
     return response
 
@@ -1569,9 +1664,7 @@ def test_get_cookies(request):
     
     cookies = dict(request.COOKIES)
     
-    print("=== TEST GET COOKIES ===")
-    print(f"Cookies reçus: {cookies}")
-    print("========================")
+    logger.debug("TEST GET COOKIES - cookies=%s", list(cookies.keys()))
     
     return Response({
         'cookies_received': cookies,

@@ -19,7 +19,7 @@ Un système Django REST Framework pour la gestion des demandes d'achat avec work
 - **Workflow de validation** à 3 étapes pour les demandes d'achat
 - **Authentification JWT** avec cookies HttpOnly sécurisés
 - **Notifications email automatiques** via Mailjet
-- **Upload de fichiers** (PDF, images) via Cloudinary
+- **Upload de fichiers** (PDF, images) via Cloudinary (SaaS) ou stockage local
 - **Dashboard** avec statistiques et analytics
 - **Réinitialisation de mot de passe** par code à 5 chiffres
 - **Journal d'activité** pour audit et traçabilité
@@ -31,7 +31,7 @@ Un système Django REST Framework pour la gestion des demandes d'achat avec work
 - Python 3.9+
 - PostgreSQL
 - Compte [Mailjet](https://mailjet.com)
-- Compte [Cloudinary](https://cloudinary.com)
+- Compte [Cloudinary](https://cloudinary.com/users/register/free) (plan gratuit)
 
 ### Installation des dépendances
 
@@ -73,16 +73,23 @@ CORS_ALLOWED_ORIGINS=https://your-frontend.com,http://localhost:3000
 CSRF_TRUSTED_ORIGINS=https://your-frontend.com,http://localhost:3000
 JWT_COOKIE_DOMAIN=your-domain.com
 
-# Email (Mailjet)
+# Email (Mailjet recommandé)
+EMAIL_PROVIDER=mailjet  # mailjet | smtp | console
 MAILJET_API_KEY=your_mailjet_api_key
 MAILJET_SECRET_KEY=your_mailjet_secret_key
 DEFAULT_FROM_EMAIL=noreply@your-domain.com
 DEFAULT_FROM_NAME=Your Company Name
+EMAIL_HOST=smtp.mailjet.com
+EMAIL_PORT=587
 
-# Stockage (Cloudinary)
-CLOUDINARY_API_KEY=your_cloudinary_api_key
-CLOUDINARY_API_SECRET=your_cloudinary_api_secret
-CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+# Stockage (Supabase)
+SUPABASE_ENABLED=true
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_SERVICE_KEY=your_service_role_key
+SUPABASE_BUCKET=attachments
+SUPABASE_FOLDER=purchase-requests
+SUPABASE_PUBLIC_BUCKET=false
+SUPABASE_SIGNED_URL_TTL=3600
 
 # Frontend
 FRONTEND_URL=https://your-frontend.com
@@ -405,7 +412,7 @@ Query parameters:
   "attachments": [
     {
       "id": 8,
-      "file_url": "https://res.cloudinary.com/.../devis_dell.pdf",
+      "file_url": "https://drive.google.com/uc?id=FILE_ID&export=download",
       "file_type": "quote",
       "description": "Devis Dell XPS 13",
       "uploaded_by": 1,
@@ -474,7 +481,7 @@ Query parameters:
 // Response (201)
 {
   "id": 8,
-  "file_url": "https://res.cloudinary.com/.../devis_dell_xyz123.pdf",
+  "file_url": "https://drive.google.com/uc?id=FILE_ID&export=download",
   "file_type": "quote",
   "description": "Devis officiel Dell",
   "request": 15,
@@ -652,7 +659,7 @@ Journal des actions sur une demande
 Pièces jointes liées aux demandes
 
 - **Types** : `quote` (devis), `invoice` (facture), `justification`, `other`
-- **Stockage** : Cloudinary (PDF, JPG, PNG)
+- **Stockage** : Cloudinary (PDF, JPG, PNG) ou fallback local
 - **Limite** : 10MB par fichier
 
 ## Architecture
@@ -692,9 +699,7 @@ simplonservice/
 asgiref==3.9.1
 certifi==2025.8.3
 charset-normalizer==3.4.3
-cloudinary==1.44.1
 Django==5.2.4
-django-cors-headers==4.7.0
 djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.1
 gunicorn==23.0.0
@@ -706,12 +711,15 @@ psycopg2-binary==2.9.10
 PyJWT==2.10.1
 python-dateutil==2.9.0.post0
 python-decouple==3.8
+python-dotenv==1.0.0
 requests==2.32.5
 six==1.17.0
 sqlparse==0.5.3
 tzdata==2025.2
 urllib3==2.5.0
 whitenoise==6.10.0
+dj-database-url==2.1.0
+cloudinary==1.40.0
 ```
 
 ## Déploiement
@@ -737,7 +745,7 @@ whitenoise==6.10.0
 3. **Services externes**
 
    - Configurer Mailjet (API keys)
-   - Configurer Cloudinary (cloud name, API keys)
+   - Configurer Cloudinary (cloud name, API key/secret, dossier)
    - Vérifier les domaines CORS
 
 4. **Serveur**
@@ -766,7 +774,7 @@ whitenoise==6.10.0
 
 - Performance de la base de données
 - Taux de succès des emails Mailjet
-- Utilisation de l'espace Cloudinary
+- Consommation de l'espace Cloudinary (quota gratuit 25 Go)
 - Temps de réponse des endpoints
 
 ## Support

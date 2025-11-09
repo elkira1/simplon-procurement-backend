@@ -51,7 +51,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         response_data = {
             'user': user_data,
             'message': f'Connexion réussie. Bienvenue {user.first_name or user.username}!',
-            'success': True
+            'success': True,
+            'tokens': {
+                'access': access_token,
+                'refresh': refresh_token,
+            }
         }
         
         response = Response(response_data, status=status.HTTP_200_OK)
@@ -64,22 +68,22 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             'path': '/'
         }
 
+        if not settings.DEBUG:
+            cookie_config['partitioned'] = True
+
         
         try:
-            
             response.set_cookie(
                 key='access_token',
                 value=access_token,
-                # max_age=60,
-                max_age=3600,  
+                max_age=3600,
                 **cookie_config
             )
-            
-            
+
             response.set_cookie(
                 key='refresh_token',
                 value=refresh_token,
-                max_age=604800,  
+                max_age=604800,
                 **cookie_config
             )
             
@@ -94,7 +98,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 class CustomTokenRefreshView(TokenRefreshView):
    
     def post(self, request, *args, **kwargs):
-        refresh_token = request.COOKIES.get('refresh_token')
+        refresh_token = request.data.get('refresh') or request.COOKIES.get('refresh_token')
         
         if not refresh_token:
             logger.warning("Tentative de refresh sans token")
@@ -112,8 +116,12 @@ class CustomTokenRefreshView(TokenRefreshView):
             new_refresh_token = validated_data.get('refresh')
             
             response = Response({
-                'success': True, 
-                'message': 'Token rafraîchi avec succès'
+                'success': True,
+                'message': 'Token rafraîchi avec succès',
+                'tokens': {
+                    'access': access_token,
+                    'refresh': new_refresh_token or refresh_token,
+                }
             }, status=status.HTTP_200_OK)
             
             cookie_config = {
@@ -122,6 +130,9 @@ class CustomTokenRefreshView(TokenRefreshView):
                 'samesite': settings.JWT_COOKIE_SAMESITE,
                 'path': '/'
             }
+
+            if settings.DEBUG is False:
+                cookie_config['partitioned'] = True
             
             if access_token:
                 response.set_cookie(

@@ -361,13 +361,27 @@ MAILJET_SECRET_KEY = config('MAILJET_SECRET_KEY', default=None)
 DEFAULT_FROM_NAME = config('DEFAULT_FROM_NAME', default='Simplon Service')
 
 # Frontend configuration
-FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
-front_origin = origin_from_url(FRONTEND_URL)
-if front_origin:
-    if front_origin not in CORS_ALLOWED_ORIGINS:
-        CORS_ALLOWED_ORIGINS.append(front_origin)
-    if front_origin not in CSRF_TRUSTED_ORIGINS:
-        CSRF_TRUSTED_ORIGINS.append(front_origin)
+RAW_FRONTEND_URL = config(
+    'FRONTEND_URL',
+    default='https://simplonservices-ci.vercel.app'
+)
+FRONTEND_URL_CANDIDATES = [
+    url.strip() for url in RAW_FRONTEND_URL.split(',') if url.strip()
+]
+FRONTEND_URL = FRONTEND_URL_CANDIDATES[0] if FRONTEND_URL_CANDIDATES else RAW_FRONTEND_URL
+
+front_origins = []
+for url in FRONTEND_URL_CANDIDATES:
+    parsed_origin = origin_from_url(url)
+    if parsed_origin:
+        front_origins.append(parsed_origin)
+
+for origin in front_origins:
+    if origin not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(origin)
+    if origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(origin)
+
 COMPANY_NAME = config('COMPANY_NAME', default='Simplon')
 
 # Supabase storage configuration

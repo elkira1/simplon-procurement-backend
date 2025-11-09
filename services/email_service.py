@@ -1,6 +1,7 @@
 import logging
 import threading
 from typing import Iterable, List, Optional, Sequence, Union
+from urllib.parse import urljoin
 
 from django.conf import settings
 
@@ -102,6 +103,11 @@ class EmailService:
                 "depuis votre profil (menu \"Paramètres\")."
             )
 
+            login_url = urljoin(
+                settings.FRONTEND_URL.rstrip('/') + '/',
+                'login'
+            )
+
             html_content = f"""
             <!DOCTYPE html>
             <html lang="fr">
@@ -159,7 +165,7 @@ class EmailService:
                         </div>
                         
                         <div style="text-align: center;">
-                            <a href="{settings.FRONTEND_URL}/login" class="btn">🚀 Se connecter maintenant</a>
+                            <a href="{login_url}" class="btn">🚀 Se connecter maintenant</a>
                         </div>
                         
                         <p>Si vous avez des questions ou besoin d'aide, n'hésitez pas à contacter <strong>{created_by.first_name} {created_by.last_name}</strong> ou l'équipe support.</p>
@@ -195,7 +201,7 @@ Rôle : {role_display}
 
 IMPORTANT : {password_instruction_text}
 
-Lien de connexion : {settings.FRONTEND_URL}/login
+Lien de connexion : {login_url}
 
 Si vous avez des questions ou besoin d'aide, n'hésitez pas à contacter {created_by.first_name} {created_by.last_name} ou l'équipe support.
 
@@ -308,9 +314,9 @@ L'équipe {settings.COMPANY_NAME}
         """
         try:
             from core.models import CustomUser  
-            from urllib.parse import urljoin
 
-            link = urljoin(settings.FRONTEND_URL, f"requests/{purchase_request.id}")
+            base_frontend = settings.FRONTEND_URL.rstrip('/') + '/'
+            link = urljoin(base_frontend, f"requests/{purchase_request.id}")
             
             recipients = CustomUser.objects.filter(role=recipients_role, is_active=True)
             
@@ -464,7 +470,7 @@ Date de création : {purchase_request.created_at.strftime('%d/%m/%Y à %H:%M')}
 
 ACTION REQUISE : Cette demande attend votre {action_required}. Veuillez vous connecter à la plateforme pour la traiter.
 
-Lien : {settings.FRONTEND_URL}/requests/{purchase_request.id}
+Lien : {link}
 
 Cordialement,
 Système de gestion des achats

@@ -1,6 +1,7 @@
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import UserCreationForm
 from django.db.models import Count
 from django.urls import reverse
 from django.utils.html import format_html
@@ -50,10 +51,32 @@ class CustomUserAdminForm(forms.ModelForm):
         fields = "__all__"
 
 
+class CustomUserCreationForm(UserCreationForm):
+    department = forms.ChoiceField(
+        choices=[("", "Sélectionner un département")] + [
+            (dept, dept) for dept in DEPARTMENT_CHOICES
+        ],
+        required=False,
+        label="Département",
+    )
+
+    class Meta(UserCreationForm.Meta):
+        model = CustomUser
+        fields = (
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "role",
+            "department",
+            "phone",
+        )
+
+
 @admin.register(CustomUser)
 class CustomUserAdmin(UserAdmin):
     form = CustomUserAdminForm
-    add_form = CustomUserAdminForm
+    add_form = CustomUserCreationForm
     list_display = (
         'username',
         'email',

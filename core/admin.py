@@ -111,7 +111,14 @@ class CustomUserAdmin(UserAdmin):
         ),
     )
 
-    add_fieldsets = UserAdmin.add_fieldsets + (
+    add_fieldsets = (
+        (
+            None,
+            {
+                'classes': ('wide',),
+                'fields': ('username', 'password1', 'password2'),
+            },
+        ),
         (
             'Informations supplémentaires',
             {

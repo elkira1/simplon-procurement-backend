@@ -9,6 +9,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def set_cookie_with_partitioned_fallback(response, *, key, value, max_age, cookie_config):
+    """
+    Django < 5.1 ne supporte pas encore l'attribut 'partitioned'.
+    On tente avec, et si le serveur lève TypeError on relance sans.
+    """
+    config = cookie_config.copy()
+    partitioned = config.pop('partitioned', None)
+
+    try:
+        if partitioned is not None:
+            response.set_cookie(
+                key=key,
+                value=value,
+                max_age=max_age,
+                partitioned=partitioned,
+                **config
+            )
+        else:
+            response.set_cookie(
+                key=key,
+                value=value,
+                max_age=max_age,
+                **config
+            )
+    except TypeError as exc:
+        if partitioned is None or "partitioned" not in str(exc):
+            raise
+
+        logger.warning(
+            "L'attribut 'partitioned' n'est pas supporté par cette version de Django. "
+            "Définition du cookie sans cet attribut."
+        )
+        response.set_cookie(
+            key=key,
+            value=value,
+            max_age=max_age,
+            **config
+        )
+
 class CustomTokenObtainPairView(TokenObtainPairView):
     """Vue personnalisée pour la connexion avec cookies HttpOnly"""
     serializer_class = CustomTokenObtainPairSerializer
@@ -73,18 +113,20 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
         
         try:
-            response.set_cookie(
+            set_cookie_with_partitioned_fallback(
+                response,
                 key='access_token',
                 value=access_token,
                 max_age=3600,
-                **cookie_config
+                cookie_config=cookie_config
             )
 
-            response.set_cookie(
+            set_cookie_with_partitioned_fallback(
+                response,
                 key='refresh_token',
                 value=refresh_token,
                 max_age=604800,
-                **cookie_config
+                cookie_config=cookie_config
             )
             
             logger.info("Cookies d'authentification définis avec succès")
@@ -128,6 +170,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                 'httponly': True,
                 'secure': settings.DEBUG is False,
                 'samesite': settings.JWT_COOKIE_SAMESITE,
+                'domain': settings.JWT_COOKIE_DOMAIN,
                 'path': '/'
             }
 
@@ -135,19 +178,21 @@ class CustomTokenRefreshView(TokenRefreshView):
                 cookie_config['partitioned'] = True
             
             if access_token:
-                response.set_cookie(
-                    'access_token',
-                    access_token,
+                set_cookie_with_partitioned_fallback(
+                    response,
+                    key='access_token',
+                    value=access_token,
                     max_age=3600,
-                    **cookie_config
+                    cookie_config=cookie_config
                 )
             
             if new_refresh_token and new_refresh_token != refresh_token:
-                response.set_cookie(
-                    'refresh_token',
-                    new_refresh_token,
+                set_cookie_with_partitioned_fallback(
+                    response,
+                    key='refresh_token',
+                    value=new_refresh_token,
                     max_age=604800,
-                    **cookie_config
+                    cookie_config=cookie_config
                 )
             
             logger.info("Tokens rafraîchis avec succès")

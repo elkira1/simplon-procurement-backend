@@ -103,6 +103,12 @@ DEFAULT_FROM_NAME=Your Company Name
 # DEFAULT_FROM_EMAIL=noreply@your-domain.com
 # DEFAULT_FROM_NAME=Your Company Name
 
+# Option 4 : Resend (API HTTPS)
+# EMAIL_PROVIDER=resend
+# RESEND_API_KEY=re_your_resend_api_key
+# DEFAULT_FROM_EMAIL=no-reply@ton-domaine.verifie (sender vérifié chez Resend)
+# DEFAULT_FROM_NAME=Your Company Name
+
 # Stockage (Supabase)
 SUPABASE_ENABLED=true
 SUPABASE_URL=https://your-project-id.supabase.co

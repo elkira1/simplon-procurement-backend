@@ -151,6 +151,45 @@ class BrevoMailProvider(BaseMailProvider):
             )
 
 
+class ResendMailProvider(BaseMailProvider):
+    """Envoi des emails via Resend (API HTTPS)."""
+
+    API_URL = "https://api.resend.com/emails"
+
+    def __init__(self) -> None:
+        api_key = getattr(settings, "RESEND_API_KEY", None)
+        if not api_key:
+            raise MailProviderError("RESEND_API_KEY non configuré.")
+        self.api_key = api_key
+
+    def send(
+        self,
+        *,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        recipients: Sequence[str],
+        from_email: str,
+        from_name: str,
+    ) -> None:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "from": f"{from_name} <{from_email}>",
+            "to": list(recipients),
+            "subject": subject,
+            "html": html_content,
+            "text": text_content or strip_tags(html_content),
+        }
+        response = requests.post(self.API_URL, json=payload, headers=headers, timeout=10)
+        if response.status_code >= 400:
+            raise MailProviderError(
+                f"Resend API error {response.status_code}: {response.text}"
+            )
+
+
 class ConsoleMailProvider(BaseMailProvider):
     """Fallback: loggue les emails dans la console (utile en dev)."""
 
@@ -183,6 +222,7 @@ PROVIDERS = {
     "gmail": SMTPMailProvider,  # alias pratique pour EMAIL_PROVIDER=gmail
     "mailjet": MailjetMailProvider,
     "brevo": BrevoMailProvider,
+    "resend": ResendMailProvider,
     "console": ConsoleMailProvider,
 }
 

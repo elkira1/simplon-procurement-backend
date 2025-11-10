@@ -3,6 +3,7 @@ import re
 from email.utils import formataddr
 from typing import Iterable, Sequence
 
+import requests
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
@@ -104,6 +105,52 @@ class MailjetMailProvider(BaseMailProvider):
             )
 
 
+class BrevoMailProvider(BaseMailProvider):
+    """Envoi des emails via l'API Brevo (ex-Sendinblue)."""
+
+    API_URL = "https://api.brevo.com/v3/smtp/email"
+
+    def __init__(self) -> None:
+        api_key = getattr(settings, "BREVO_API_KEY", None) or getattr(
+            settings, "SENDINBLUE_API_KEY", None
+        )
+        if not api_key:
+            raise MailProviderError(
+                "BREVO_API_KEY (ou SENDINBLUE_API_KEY) non configuré."
+            )
+        self.api_key = api_key
+
+    def send(
+        self,
+        *,
+        subject: str,
+        html_content: str,
+        text_content: str,
+        recipients: Sequence[str],
+        from_email: str,
+        from_name: str,
+    ) -> None:
+        payload = {
+            "sender": {"email": from_email, "name": from_name},
+            "to": [{"email": email} for email in recipients],
+            "subject": subject,
+            "htmlContent": html_content,
+            "textContent": text_content or strip_tags(html_content),
+        }
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "api-key": self.api_key,
+        }
+
+        response = requests.post(self.API_URL, json=payload, headers=headers, timeout=10)
+        if response.status_code >= 400:
+            raise MailProviderError(
+                f"Brevo API error {response.status_code}: {response.text}"
+            )
+
+
 class ConsoleMailProvider(BaseMailProvider):
     """Fallback: loggue les emails dans la console (utile en dev)."""
 
@@ -135,6 +182,7 @@ PROVIDERS = {
     "smtp": SMTPMailProvider,
     "gmail": SMTPMailProvider,  # alias pratique pour EMAIL_PROVIDER=gmail
     "mailjet": MailjetMailProvider,
+    "brevo": BrevoMailProvider,
     "console": ConsoleMailProvider,
 }
 

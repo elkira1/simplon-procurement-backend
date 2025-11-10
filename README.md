@@ -76,7 +76,7 @@ JWT_COOKIE_DOMAIN=your-domain.com
 # Fichier d'environnement
 Copiez `.env.example` vers `.env` et remplissez les valeurs sensibles.
 
-# Email (SMTP / Gmail / Mailjet)
+# Email (SMTP / Gmail / Mailjet / Brevo)
 # Option 1 : Gmail (mot de passe applicatif requis)
 EMAIL_PROVIDER=gmail  # alias smtp -> smtp.gmail.com
 EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
@@ -96,6 +96,12 @@ DEFAULT_FROM_NAME=Your Company Name
 # DEFAULT_FROM_NAME=Your Company Name
 # EMAIL_HOST=smtp.mailjet.com
 # EMAIL_PORT=587
+
+# Option 3 : Brevo (ex Sendinblue) via API HTTPS (recommandé sur Render)
+# EMAIL_PROVIDER=brevo
+# BREVO_API_KEY=your_brevo_v3_api_key
+# DEFAULT_FROM_EMAIL=noreply@your-domain.com
+# DEFAULT_FROM_NAME=Your Company Name
 
 # Stockage (Supabase)
 SUPABASE_ENABLED=true

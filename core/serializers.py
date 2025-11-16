@@ -13,12 +13,94 @@ from services.supabase_storage_service import (
     SupabaseStorageService,
 )
 
-from .models import Attachment, PasswordResetCode, PurchaseRequest, RequestStep, UserActivity
+from .models import (
+    Attachment,
+    BudgetProject,
+    IncidentComment,
+    IncidentReport,
+    PasswordResetCode,
+    ProvisionRequest,
+    PurchaseRequest,
+    RequestStep,
+    UserActivity,
+)
 
 
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+def display_name(user):
+    if not user:
+        return None
+    full_name = f"{user.first_name} {user.last_name}".strip()
+    return full_name if full_name else user.username
+
+
+class BudgetProjectSimpleSerializer(serializers.ModelSerializer):
+    available_amount = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BudgetProject
+        fields = ['id', 'name', 'code', 'status', 'available_amount']
+
+    def get_available_amount(self, obj):
+        return obj.available_amount
+
+
+class BudgetProjectSerializer(BudgetProjectSimpleSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BudgetProject
+        fields = [
+            'id',
+            'name',
+            'code',
+            'description',
+            'status',
+            'allocated_amount',
+            'committed_amount',
+            'spent_amount',
+            'available_amount',
+            'start_date',
+            'end_date',
+            'created_by',
+            'created_by_name',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_by', 'created_by_name', 'created_at', 'updated_at']
+
+    def get_created_by_name(self, obj):
+        return display_name(obj.created_by)
+
+
+class BudgetProjectCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BudgetProject
+        fields = ['name', 'code', 'description', 'allocated_amount', 'start_date', 'end_date']
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        return BudgetProject.objects.create(created_by=request.user, **validated_data)
+
+    def validate_allocated_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Le montant alloué doit être positif.")
+        return value
+
+
+class BudgetProjectUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BudgetProject
+        fields = ['name', 'description', 'allocated_amount', 'status', 'end_date']
+
+    def validate_allocated_amount(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("Le montant doit être supérieur à zéro.")
+        return value
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -401,6 +483,10 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     urgency_display = serializers.CharField(source='get_urgency_display', read_only=True)
     current_step = serializers.ReadOnlyField()
+    budget_project = BudgetProjectSimpleSerializer(read_only=True)
+    budget_locked_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True, allow_null=True
+    )
 
     rejected_by_name = serializers.CharField(source='rejected_by.username', read_only=True)
 
@@ -422,7 +508,8 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
             'justification',
             'rejected_by', 'rejected_by_name', 'rejected_by_role',
             'accounting_validated_by', 'accounting_validated_by_name',
-            'approved_by', 'approved_by_name'
+            'approved_by', 'approved_by_name',
+            'budget_project', 'budget_locked_amount'
         ]
 
         
@@ -436,6 +523,10 @@ class PurchaseRequestDetailSerializer(serializers.ModelSerializer):
     steps = RequestStepSerializer(many=True, read_only=True)
     attachments = AttachmentSerializer(many=True, read_only=True)
     rejected_by_name = serializers.CharField(source='rejected_by.username', read_only=True)
+    budget_project = BudgetProjectSimpleSerializer(read_only=True)
+    budget_locked_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True, allow_null=True
+    )
     
     class Meta:
         model = PurchaseRequest
@@ -445,7 +536,8 @@ class PurchaseRequestDetailSerializer(serializers.ModelSerializer):
             'status', 'status_display', 'current_step', 'budget_available', 
             'final_cost', 'created_at', 'updated_at', 'steps', 'attachments',
             'rejection_reason', 'rejected_by', 'rejected_by_name', 
-            'rejected_at', 'rejected_by_role'
+            'rejected_at', 'rejected_by_role', 'budget_project', 'budget_locked_amount',
+            'budget_deducted'
         ] 
 
 
@@ -472,6 +564,10 @@ class ValidateRequestSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True)
     budget_available = serializers.BooleanField(required=False)
     final_cost = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    budget_project = serializers.IntegerField(required=False, allow_null=True)
+    budget_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
     
     def validate(self, data):
         action = data.get('action')
@@ -485,9 +581,9 @@ class ValidateRequestSerializer(serializers.Serializer):
         )
         
         if user_role == 'accounting' and action == 'approve':
-            if 'budget_available' not in data:
+            if not data.get('budget_project'):
                 raise serializers.ValidationError({
-                    'budget_available': "La vérification budgétaire est obligatoire pour la comptabilité"
+                    'budget_project': "Merci de sélectionner un projet budgétaire."
                 })
         
         if action == 'reject':
@@ -534,3 +630,195 @@ class DashboardSerializer(serializers.Serializer):
     def to_representation(self, instance):
         """Permet de dire à DRF que l'instance est déjà un dict"""
         return instance
+
+
+class ProvisionRequestSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+    created_by_role = serializers.SerializerMethodField()
+    handled_by_name = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    is_owner = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProvisionRequest
+        fields = [
+            'id',
+            'title',
+            'description',
+            'priority',
+            'priority_display',
+            'expected_date',
+            'status',
+            'status_display',
+            'manager_note',
+            'rejection_reason',
+            'created_at',
+            'updated_at',
+            'created_by',
+            'created_by_name',
+            'created_by_role',
+            'handled_by',
+            'handled_by_name',
+            'is_owner',
+        ]
+        read_only_fields = [
+            'created_at',
+            'updated_at',
+            'created_by',
+            'created_by_name',
+            'created_by_role',
+            'handled_by_name',
+            'is_owner',
+        ]
+
+    def get_created_by_name(self, obj):
+        return display_name(obj.created_by)
+
+    def get_created_by_role(self, obj):
+        return obj.created_by.get_role_display()
+
+    def get_handled_by_name(self, obj):
+        return display_name(obj.handled_by)
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        return bool(request and request.user == obj.created_by)
+
+
+class ProvisionRequestCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProvisionRequest
+        fields = ['title', 'description', 'priority', 'expected_date']
+
+    def create(self, validated_data):
+        request = self.context['request']
+        return ProvisionRequest.objects.create(created_by=request.user, **validated_data)
+
+
+class ProvisionRequestStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProvisionRequest
+        fields = ['status', 'manager_note', 'rejection_reason', 'handled_by']
+
+    def validate(self, attrs):
+        status_value = attrs.get('status')
+        if status_value == 'rejected' and not attrs.get('rejection_reason'):
+            raise serializers.ValidationError({
+                'rejection_reason': "Merci de préciser la raison du refus."
+            })
+        return attrs
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if not validated_data.get('handled_by') and request:
+            validated_data['handled_by'] = request.user
+
+        # Nettoyer la note de rejet si la demande passe à l'état traité
+        if validated_data.get('status') in {'pending', 'in_progress', 'completed'}:
+            validated_data.setdefault('rejection_reason', '')
+        return super().update(instance, validated_data)
+
+
+class IncidentCommentSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IncidentComment
+        fields = ['id', 'author', 'author_name', 'content', 'created_at']
+        read_only_fields = ['id', 'author', 'author_name', 'created_at']
+
+    def get_author_name(self, obj):
+        return display_name(obj.author)
+
+
+class IncidentReportSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+    comments = IncidentCommentSerializer(many=True, read_only=True)
+    comment_count = serializers.SerializerMethodField()
+    can_update_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IncidentReport
+        fields = [
+            'id',
+            'title',
+            'category',
+            'category_display',
+            'description',
+            'status',
+            'status_display',
+            'resolution_note',
+            'created_at',
+            'updated_at',
+            'last_activity_at',
+            'created_by',
+            'created_by_name',
+            'acknowledged_by',
+            'comments',
+            'comment_count',
+            'can_update_status',
+        ]
+        read_only_fields = [
+            'created_at',
+            'updated_at',
+            'last_activity_at',
+            'created_by',
+            'created_by_name',
+            'acknowledged_by',
+            'comment_count',
+            'can_update_status',
+        ]
+
+    def get_created_by_name(self, obj):
+        return display_name(obj.created_by)
+
+    def get_comment_count(self, obj):
+        return obj.comments.count()
+
+    def get_can_update_status(self, obj):
+        request = self.context.get('request')
+        return bool(request and request.user.role in ('mg', 'director'))
+
+
+class IncidentReportCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IncidentReport
+        fields = ['title', 'category', 'description']
+
+    def create(self, validated_data):
+        request = self.context['request']
+        return IncidentReport.objects.create(created_by=request.user, **validated_data)
+
+
+class IncidentReportUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IncidentReport
+        fields = ['status', 'resolution_note']
+
+    def validate(self, attrs):
+        status_value = attrs.get('status')
+        if status_value == 'resolved' and not attrs.get('resolution_note'):
+            raise serializers.ValidationError({
+                'resolution_note': "Merci d'ajouter un message de résolution."
+            })
+        return attrs
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if validated_data.get('status') and instance.acknowledged_by is None and request:
+            instance.acknowledged_by = request.user
+        return super().update(instance, validated_data)
+
+
+class IncidentCommentCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IncidentComment
+        fields = ['content']
+
+    def create(self, validated_data):
+        report = self.context['report']
+        author = self.context['request'].user
+        return IncidentComment.objects.create(report=report, author=author, **validated_data)

@@ -14,8 +14,12 @@ from services.supabase_storage_service import (
 
 from .models import (
     Attachment,
+    BudgetProject,
     CustomUser,
+    IncidentComment,
+    IncidentReport,
     PasswordResetCode,
+    ProvisionRequest,
     PurchaseRequest,
     RequestStep,
     UserActivity,
@@ -282,7 +286,7 @@ class AttachmentInline(admin.TabularInline):
 class PurchaseRequestAdmin(admin.ModelAdmin):
     list_display = (
         'id', 'user', 'item_description_short', 'estimated_cost', 
-        'status_badge', 'urgency_badge', 'created_at'
+        'status_badge', 'urgency_badge', 'budget_project', 'created_at'
     )
     list_filter = ('status', 'urgency', 'created_at', 'user__role')
     search_fields = ('item_description', 'user__username', 'justification')
@@ -293,6 +297,7 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
         'accounting_validated_by',
         'approved_by',
         'rejected_by',
+        'budget_project',
     )
     autocomplete_fields = (
         'user',
@@ -300,6 +305,7 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
         'accounting_validated_by',
         'approved_by',
         'rejected_by',
+        'budget_project',
     )
     list_per_page = 25
     save_on_top = True
@@ -319,7 +325,15 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
             'fields': ('justification',)
         }),
         ('Workflow', {
-            'fields': ('status', 'current_step', 'budget_available', 'final_cost')
+            'fields': (
+                'status',
+                'current_step',
+                'budget_available',
+                'final_cost',
+                'budget_project',
+                'budget_locked_amount',
+                'budget_deducted',
+            )
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -477,7 +491,7 @@ class AttachmentAdmin(admin.ModelAdmin):
                         request,
                         _("Échec pour %s: %s") % (attachment, exc),
                         level=messages.WARNING,
-                    )
+            )
 
         if refreshed:
             self.message_user(
@@ -485,6 +499,74 @@ class AttachmentAdmin(admin.ModelAdmin):
                 _('%d lien(s) mis à jour avec succès.') % refreshed,
                 level=messages.SUCCESS,
             )
+
+
+@admin.register(BudgetProject)
+class BudgetProjectAdmin(admin.ModelAdmin):
+    list_display = (
+        'code',
+        'name',
+        'status',
+        'allocated_amount',
+        'committed_amount',
+        'spent_amount',
+        'available_display',
+        'created_at',
+    )
+    list_filter = ('status', 'created_at')
+    search_fields = ('code', 'name', 'description')
+    readonly_fields = ('created_at', 'updated_at', 'available_display')
+    autocomplete_fields = ('created_by',)
+    date_hierarchy = 'created_at'
+
+    @admin.display(description='Disponible')
+    def available_display(self, obj):
+        return obj.available_amount
+
+
+@admin.register(ProvisionRequest)
+class ProvisionRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'title',
+        'created_by',
+        'priority',
+        'status',
+        'expected_date',
+        'handled_by',
+        'created_at',
+    )
+    list_filter = ('status', 'priority', 'created_at')
+    search_fields = ('title', 'description', 'created_by__username')
+    readonly_fields = ('created_at', 'updated_at')
+    autocomplete_fields = ('created_by', 'handled_by')
+    date_hierarchy = 'created_at'
+
+
+@admin.register(IncidentReport)
+class IncidentReportAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'title',
+        'category',
+        'status',
+        'created_by',
+        'acknowledged_by',
+        'last_activity_at',
+    )
+    list_filter = ('category', 'status', 'created_at')
+    search_fields = ('title', 'description', 'created_by__username')
+    readonly_fields = ('created_at', 'updated_at', 'last_activity_at')
+    autocomplete_fields = ('created_by', 'acknowledged_by')
+
+
+@admin.register(IncidentComment)
+class IncidentCommentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'report', 'author', 'created_at')
+    list_filter = ('created_at', 'author__role')
+    search_fields = ('report__title', 'author__username', 'content')
+    readonly_fields = ('created_at',)
+    autocomplete_fields = ('report', 'author')
 
 admin.site.site_header = "Administration - Gestion Moyens Généraux"
 admin.site.site_title = "Gestion MG"

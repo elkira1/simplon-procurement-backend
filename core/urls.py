@@ -33,6 +33,17 @@ urlpatterns = [
     
     path('attachments/', views.attachments_list, name='attachments_list'),
     path('attachments/<int:pk>/delete/', views.attachment_delete, name='attachment_delete'),
+
+    path('provisions/', views.provision_requests_view, name='provision_requests'),
+    path('provisions/<int:pk>/', views.provision_request_update, name='provision_request_update'),
+
+    path('budgets/', views.budget_projects_view, name='budget_projects'),
+    path('budgets/<int:pk>/', views.budget_project_detail, name='budget_project_detail'),
+    path('budgets/stats/', views.budget_statistics_view, name='budget_statistics'),
+
+    path('incidents/', views.incident_reports_view, name='incident_reports'),
+    path('incidents/<int:pk>/', views.incident_report_update, name='incident_report_update'),
+    path('incidents/<int:pk>/comments/', views.incident_report_comments, name='incident_report_comments'),
     
     path('dashboard/', views.dashboard, name='dashboard'),
 ]

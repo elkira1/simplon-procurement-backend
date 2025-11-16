@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 
 # Create your views here.
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 from django.db.models import Q, Count, Sum, Avg, Case, When, Value, F, DecimalField
 from dateutil.relativedelta import relativedelta
 from django.utils import timezone
@@ -15,11 +16,45 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
-from .models import PasswordResetCode, PurchaseRequest, RequestStep, Attachment, UserActivity
+from .models import (
+    Attachment,
+    BudgetProject,
+    IncidentComment,
+    IncidentReport,
+    PasswordResetCode,
+    ProvisionRequest,
+    PurchaseRequest,
+    RequestStep,
+    UserActivity,
+)
 from .serializers import (
-    PasswordChangeSerializer, PasswordResetConfirmSerializer, PasswordResetRequestSerializer, PasswordResetVerifySerializer, PurchaseRequestListSerializer, PurchaseRequestDetailSerializer,
-    PurchaseRequestCreateSerializer, UserActivitySerializer, UserListSerializer, UserProfileUpdateSerializer, UserRegistrationSerializer, UserUpdateSerializer, ValidateRequestSerializer,
-    AttachmentSerializer, DashboardSerializer, UserSerializer
+    AttachmentSerializer,
+    BudgetProjectCreateSerializer,
+    BudgetProjectSerializer,
+    BudgetProjectUpdateSerializer,
+    DashboardSerializer,
+    IncidentCommentCreateSerializer,
+    IncidentCommentSerializer,
+    IncidentReportCreateSerializer,
+    IncidentReportSerializer,
+    IncidentReportUpdateSerializer,
+    PasswordChangeSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
+    ProvisionRequestCreateSerializer,
+    ProvisionRequestSerializer,
+    ProvisionRequestStatusSerializer,
+    PurchaseRequestCreateSerializer,
+    PurchaseRequestDetailSerializer,
+    PurchaseRequestListSerializer,
+    UserActivitySerializer,
+    UserListSerializer,
+    UserProfileUpdateSerializer,
+    UserRegistrationSerializer,
+    UserSerializer,
+    UserUpdateSerializer,
+    ValidateRequestSerializer,
 )
 
 from django.core.paginator import Paginator
@@ -672,7 +707,7 @@ def validate_request(request, pk):
     """Valider ou rejeter une demande selon le rôle"""
     purchase_request = get_object_or_404(PurchaseRequest, pk=pk)
     user_role = request.user.role
-    
+
     action = request.data.get('action')
     comment = request.data.get('comment', '')
 
@@ -684,7 +719,7 @@ def validate_request(request, pk):
         user_role,
         purchase_request.status,
     )
-    
+
     if action not in {'approve', 'reject'}:
         return Response(
             {'error': f"Action '{action}' non supportée"},
@@ -702,54 +737,94 @@ def validate_request(request, pk):
             purchase_request.status,
         )
         return Response(
-            {'error': f'Vous ne pouvez pas agir sur cette demande à cette étape. Status: {purchase_request.status}, Role: {user_role}'}, 
-            status=status.HTTP_403_FORBIDDEN
+            {
+                'error': (
+                    f"Vous ne pouvez pas agir sur cette demande à cette étape. "
+                    f"Status: {purchase_request.status}, Role: {user_role}"
+                )
+            },
+            status=status.HTTP_403_FORBIDDEN,
         )
-    
-    serializer = ValidateRequestSerializer(data=request.data, context={'request': request})
-    if serializer.is_valid():
-        action = serializer.validated_data['action']
-        comment = serializer.validated_data.get('comment', '')
-        budget_available = serializer.validated_data.get('budget_available')
-        final_cost = serializer.validated_data.get('final_cost')
-        
-        
+
+    serializer = ValidateRequestSerializer(
+        data=request.data, context={'request': request, 'purchase_request': purchase_request}
+    )
+
+    if not serializer.is_valid():
+        logger.warning(
+            "Validation errors while processing request %s: %s",
+            purchase_request.id,
+            serializer.errors,
+        )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    data = serializer.validated_data
+    action = data['action']
+    comment = data.get('comment', '')
+    final_cost = data.get('final_cost')
+    budget_available = data.get('budget_available')
+    budget_project_id = data.get('budget_project')
+    budget_amount = data.get('budget_amount')
+
+    try:
         if action == 'reject':
+            if purchase_request.budget_project and not purchase_request.budget_deducted:
+                _release_budget_for_request(purchase_request)
+
             purchase_request.status = 'rejected'
             purchase_request.rejection_reason = comment
             purchase_request.rejected_by = request.user
             purchase_request.rejected_at = timezone.now()
             purchase_request.rejected_by_role = user_role
-            
-        else:  
+
+        else:
             if user_role == 'mg':
-                    purchase_request.status = 'mg_approved'
-                    purchase_request.mg_validated_by = request.user  
-                    purchase_request.mg_validated_at = timezone.now() 
-                    
-                    if final_cost is not None:
-                        purchase_request.final_cost = final_cost 
+                purchase_request.status = 'mg_approved'
+                purchase_request.mg_validated_by = request.user
+                purchase_request.mg_validated_at = timezone.now()
+                if final_cost is not None:
+                    purchase_request.final_cost = final_cost
+
             elif user_role == 'accounting':
-                    purchase_request.status = 'accounting_reviewed'
-                    purchase_request.budget_available = budget_available
-                    purchase_request.accounting_validated_by = request.user  
-                    purchase_request.accounting_validated_at = timezone.now()
-                      
-                    if final_cost is not None:
-                        purchase_request.final_cost = final_cost
+                purchase_request.status = 'accounting_reviewed'
+                purchase_request.budget_available = (
+                    True if budget_available is None else budget_available
+                )
+                purchase_request.accounting_validated_by = request.user
+                purchase_request.accounting_validated_at = timezone.now()
+                if final_cost is not None:
+                    purchase_request.final_cost = final_cost
+
+                amount_to_reserve = budget_amount or final_cost
+                if amount_to_reserve is None:
+                    amount_to_reserve = (
+                        purchase_request.final_cost or purchase_request.estimated_cost
+                    )
+                if amount_to_reserve is None:
+                    raise ValueError("Impossible de déterminer le montant budgétaire.")
+
+                _reserve_budget_for_request(
+                    purchase_request,
+                    budget_project_id,
+                    amount_to_reserve,
+                )
+
             elif user_role == 'director':
-                    purchase_request.status = 'director_approved'
-                    purchase_request.approved_by = request.user  
-                    purchase_request.approved_at = timezone.now()
-        
+                purchase_request.status = 'director_approved'
+                purchase_request.approved_by = request.user
+                purchase_request.approved_at = timezone.now()
+                if final_cost is not None:
+                    purchase_request.final_cost = final_cost
+                _finalize_budget_for_request(purchase_request)
+
         purchase_request.save()
-        
+
         RequestStep.objects.create(
             request=purchase_request,
             user=request.user,
             action='approved' if action == 'approve' else 'rejected',
             comment=comment,
-            budget_check=budget_available if user_role == 'accounting' else None
+            budget_check=budget_available if user_role == 'accounting' else None,
         )
 
         UserActivity.objects.create(
@@ -759,16 +834,17 @@ def validate_request(request, pk):
             details={
                 'request_id': purchase_request.id,
                 'action': action,
-                'status': purchase_request.status
+                'status': purchase_request.status,
             },
-            ip_address=get_client_ip(request)
+            ip_address=get_client_ip(request),
         )
-        
-        detail_serializer = PurchaseRequestDetailSerializer(purchase_request)
-        return Response(detail_serializer.data)
-    else:
-        logger.warning("Validation errors while processing request %s: %s", purchase_request.id, serializer.errors)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    except (BudgetProject.DoesNotExist, ValueError, InvalidOperation) as exc:
+        logger.warning("Budget error while validating request %s: %s", purchase_request.id, exc)
+        return Response({'budget_project': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+
+    detail_serializer = PurchaseRequestDetailSerializer(purchase_request)
+    return Response(detail_serializer.data)
 
 
 
@@ -1017,6 +1093,351 @@ def attachment_delete(request, pk):
 
     attachment.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _provision_stats(queryset):
+    return {
+        'total': queryset.count(),
+        'pending': queryset.filter(status='pending').count(),
+        'in_progress': queryset.filter(status='in_progress').count(),
+        'completed': queryset.filter(status='completed').count(),
+        'rejected': queryset.filter(status='rejected').count(),
+    }
+
+
+def _reserve_budget_for_request(purchase_request, project_id, amount):
+    amount = Decimal(str(amount))
+    if amount <= 0:
+        raise ValueError("Le montant budgétaire doit être positif.")
+
+    with transaction.atomic():
+        previous_project_id = purchase_request.budget_project_id
+        previous_amount = purchase_request.budget_locked_amount or Decimal('0')
+
+        project = None
+        if previous_project_id:
+            previous_project = BudgetProject.objects.select_for_update().get(
+                pk=previous_project_id
+            )
+            if previous_amount > 0:
+                previous_project.release_amount(previous_amount)
+            if previous_project_id == project_id:
+                project = previous_project
+
+        if project is None:
+            project = BudgetProject.objects.select_for_update().get(pk=project_id)
+
+        project.reserve_amount(amount)
+        purchase_request.budget_project = project
+        purchase_request.budget_locked_amount = amount
+        purchase_request.budget_deducted = False
+
+
+def _release_budget_for_request(purchase_request):
+    project = purchase_request.budget_project
+    amount = purchase_request.budget_locked_amount or Decimal('0')
+    if project and amount > 0:
+        with transaction.atomic():
+            locked_project = BudgetProject.objects.select_for_update().get(pk=project.pk)
+            locked_project.release_amount(amount)
+    purchase_request.budget_locked_amount = None
+    purchase_request.budget_deducted = False
+
+
+def _finalize_budget_for_request(purchase_request):
+    project = purchase_request.budget_project
+    if not project or purchase_request.budget_deducted:
+        return
+
+    amount = (
+        purchase_request.budget_locked_amount
+        or purchase_request.final_cost
+        or purchase_request.estimated_cost
+        or Decimal('0')
+    )
+    amount = Decimal(str(amount))
+    if amount <= 0:
+        return
+
+    with transaction.atomic():
+        locked_project = BudgetProject.objects.select_for_update().get(pk=project.pk)
+        locked_project.spend_amount(amount)
+    purchase_request.budget_locked_amount = amount
+    purchase_request.budget_deducted = True
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def provision_requests_view(request):
+    user = request.user
+    scope = request.query_params.get('scope', 'all')
+    status_filter = request.query_params.get('status')
+
+    queryset = ProvisionRequest.objects.select_related('created_by', 'handled_by')
+
+    if user.role != 'mg' or scope == 'mine':
+        queryset = queryset.filter(created_by=user)
+
+    if status_filter and status_filter != 'all':
+        queryset = queryset.filter(status=status_filter)
+
+    if request.method == 'GET':
+        stats_queryset = (
+            ProvisionRequest.objects.all()
+            if user.role == 'mg'
+            else ProvisionRequest.objects.filter(created_by=user)
+        )
+        serializer = ProvisionRequestSerializer(
+            queryset,
+            many=True,
+            context={'request': request},
+        )
+        return Response(
+            {
+                'results': serializer.data,
+                'stats': _provision_stats(stats_queryset),
+                'can_manage': user.role == 'mg',
+            }
+        )
+
+    serializer = ProvisionRequestCreateSerializer(
+        data=request.data, context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    provision = serializer.save()
+
+    return Response(
+        ProvisionRequestSerializer(provision, context={'request': request}).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def provision_request_update(request, pk):
+    provision = get_object_or_404(
+        ProvisionRequest.objects.select_related('created_by', 'handled_by'), pk=pk
+    )
+
+    if request.user.role != 'mg':
+        return Response(
+            {'detail': "Seul le responsable Moyens Généraux peut traiter ces demandes."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = ProvisionRequestStatusSerializer(
+        provision, data=request.data, partial=True, context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    provision = serializer.save()
+
+    return Response(
+        ProvisionRequestSerializer(provision, context={'request': request}).data
+    )
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def budget_projects_view(request):
+    if request.method == 'GET':
+        queryset = BudgetProject.objects.select_related('created_by').order_by('-created_at')
+        if request.user.role not in ('accounting', 'director'):
+            queryset = queryset.filter(status='active')
+        serializer = BudgetProjectSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    if request.user.role != 'accounting':
+        return Response(
+            {'detail': "Seul le service comptabilité peut créer des budgets."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = BudgetProjectCreateSerializer(
+        data=request.data, context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    project = serializer.save()
+    return Response(BudgetProjectSerializer(project).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def budget_project_detail(request, pk):
+    project = get_object_or_404(BudgetProject.objects.select_related('created_by'), pk=pk)
+
+    if request.method == 'GET':
+        return Response(BudgetProjectSerializer(project).data)
+
+    if request.user.role != 'accounting':
+        return Response(
+            {'detail': "Seul le service comptabilité peut modifier un budget."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = BudgetProjectUpdateSerializer(project, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    project = serializer.save()
+    return Response(BudgetProjectSerializer(project).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def budget_statistics_view(request):
+    if request.user.role not in ('accounting', 'director'):
+        return Response(
+            {'detail': "Accès réservé au service comptabilité / direction."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    projects = BudgetProject.objects.all().order_by('-created_at')
+    totals = {
+        'allocated': sum((project.allocated_amount or Decimal('0')) for project in projects),
+        'committed': sum((project.committed_amount or Decimal('0')) for project in projects),
+        'spent': sum((project.spent_amount or Decimal('0')) for project in projects),
+    }
+    totals['available'] = totals['allocated'] - totals['committed'] - totals['spent']
+
+    project_overview = [
+        {
+            'id': project.id,
+            'name': project.name,
+            'code': project.code,
+            'status': project.status,
+            'allocated': project.allocated_amount,
+            'committed': project.committed_amount,
+            'spent': project.spent_amount,
+            'available': project.available_amount,
+            'progress': float(
+                (project.spent_amount or 0)
+                / project.allocated_amount * 100
+            )
+            if project.allocated_amount else 0,
+        }
+        for project in projects
+    ]
+
+    # Historique mensuel sur 6 mois
+    monthly_history = []
+    today = timezone.now().date().replace(day=1)
+    approved_requests = PurchaseRequest.objects.filter(
+        status='director_approved',
+        approved_at__isnull=False,
+    )
+    for index in range(5, -1, -1):
+        month_start = today - relativedelta(months=index)
+        month_end = month_start + relativedelta(months=1)
+        month_total = approved_requests.filter(
+            approved_at__gte=month_start,
+            approved_at__lt=month_end,
+        ).aggregate(total=Sum('final_cost'))['total'] or Decimal('0')
+        monthly_history.append(
+            {
+                'label': month_start.strftime('%b %Y'),
+                'amount': month_total,
+            }
+        )
+
+    top_requests = (
+        PurchaseRequest.objects.filter(status='director_approved', final_cost__isnull=False)
+        .select_related('budget_project', 'user')
+        .order_by('-final_cost')[:5]
+    )
+    top_expenses = [
+        {
+            'id': req.id,
+            'user': req.user.get_full_name() or req.user.username,
+            'project': req.budget_project.code if req.budget_project else None,
+            'amount': req.final_cost,
+            'approved_at': req.approved_at,
+        }
+        for req in top_requests
+    ]
+
+    return Response(
+        {
+            'totals': totals,
+            'projects': project_overview,
+            'monthly_history': monthly_history,
+            'top_expenses': top_expenses,
+        }
+    )
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def incident_reports_view(request):
+    queryset = IncidentReport.objects.select_related(
+        'created_by', 'acknowledged_by'
+    ).prefetch_related('comments__author')
+
+    if request.method == 'GET':
+        serializer = IncidentReportSerializer(
+            queryset, many=True, context={'request': request}
+        )
+        return Response(serializer.data)
+
+    serializer = IncidentReportCreateSerializer(
+        data=request.data, context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    report = serializer.save()
+    return Response(
+        IncidentReportSerializer(report, context={'request': request}).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def incident_report_update(request, pk):
+    report = get_object_or_404(
+        IncidentReport.objects.select_related('created_by', 'acknowledged_by'), pk=pk
+    )
+
+    if request.user.role not in ('mg', 'director'):
+        return Response(
+            {'detail': "Seuls les responsables peuvent mettre à jour le statut."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = IncidentReportUpdateSerializer(
+        report, data=request.data, partial=True, context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    report = serializer.save()
+    report.last_activity_at = timezone.now()
+    report.save(update_fields=['last_activity_at'])
+
+    return Response(
+        IncidentReportSerializer(report, context={'request': request}).data
+    )
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def incident_report_comments(request, pk):
+    report = get_object_or_404(
+        IncidentReport.objects.select_related('created_by'), pk=pk
+    )
+
+    if request.method == 'GET':
+        serializer = IncidentCommentSerializer(
+            report.comments.select_related('author'), many=True
+        )
+        return Response(serializer.data)
+
+    serializer = IncidentCommentCreateSerializer(
+        data=request.data, context={'request': request, 'report': report}
+    )
+    serializer.is_valid(raise_exception=True)
+    comment = serializer.save()
+
+    report.last_activity_at = timezone.now()
+    report.save(update_fields=['last_activity_at'])
+
+    return Response(
+        IncidentCommentSerializer(comment).data, status=status.HTTP_201_CREATED
+    )
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
